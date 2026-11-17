@@ -1,0 +1,194 @@
+{
+  "name": "leptons",
+  "created": "2026-11-17T15:33:39",
+  "models": [
+    {
+      "scan": {
+        "y": {
+          "linspace": [
+            0,
+            1,
+            21
+          ]
+        },
+        "M": {
+          "logspace": [
+            3,
+            14,
+            23
+          ]
+        }
+      },
+      "links": {
+        "y": [
+          "y_N_L_3"
+        ]
+      },
+      "fixed": {
+        "M": 1000.0
+      },
+      "benchmarks": [
+        {
+          "y": 0.5,
+          "M": 1000.0
+        },
+        {
+          "y": 0.5,
+          "M": 10000000000.0
+        }
+      ],
+      "run": {
+        "betas": "native",
+        "plots": true
+      },
+      "model": {
+        "name": "seesaw_typeI_1N",
+        "fields": [
+          "N:(1,1,0)"
+        ],
+        "include_sm_mixing": true,
+        "exclude": [
+          "y_N_L_1",
+          "y_N_L_2"
+        ]
+      },
+      "examples": [
+        {
+          "y": 0.3,
+          "M": 1000.0
+        },
+        {
+          "y": 0.6,
+          "M": 1000000.0
+        },
+        {
+          "y": 0.9,
+          "M": 1000000000.0
+        }
+      ]
+    },
+    {
+      "scan": {
+        "y": {
+          "linspace": [
+            0,
+            1,
+            21
+          ]
+        },
+        "M": {
+          "logspace": [
+            3,
+            14,
+            23
+          ]
+        }
+      },
+      "links": {
+        "y": [
+          "y_N_1_L_1",
+          "y_N_2_L_2",
+          "y_N_3_L_3"
+        ]
+      },
+      "fixed": {
+        "M": 1000.0
+      },
+      "benchmarks": [
+        {
+          "y": 0.5,
+          "M": 1000.0
+        },
+        {
+          "y": 0.5,
+          "M": 10000000000.0
+        }
+      ],
+      "run": {
+        "betas": "native",
+        "plots": true
+      },
+      "model": {
+        "name": "seesaw_typeI_3N",
+        "fields": [
+          "N:3x(1,1,0)"
+        ],
+        "include_sm_mixing": true,
+        "exclude": [
+          "y_N_1_L_2",
+          "y_N_1_L_3",
+          "y_N_2_L_1",
+          "y_N_2_L_3",
+          "y_N_3_L_1",
+          "y_N_3_L_2"
+        ]
+      },
+      "examples": [
+        {
+          "y": 0.3,
+          "M": 1000.0
+        },
+        {
+          "y": 0.6,
+          "M": 1000000.0
+        },
+        {
+          "y": 0.9,
+          "M": 1000000000.0
+        }
+      ]
+    }
+  ],
+  "summary": [
+    {
+      "index": 1,
+      "name": "seesaw_typeI_1N",
+      "label": "seesaw_typeI_1N",
+      "fields": "N(1,1,0)",
+      "yukawas": "y_N_L_3",
+      "n_yukawas": 1,
+      "anomaly_free": true,
+      "warnings": "",
+      "bench1_mu_I_GeV": 148230778.82809505,
+      "bench1_status": "unstable",
+      "bench2_mu_I_GeV": 22291175485.810547,
+      "bench2_status": "unstable",
+      "sm_mu_I_GeV": 31633548607.718174,
+      "scan_log10_mu_I_min": 4.6316527527198685,
+      "scan_log10_mu_I_max": 10.500147914532242,
+      "scan_frac_unstable": 1.0,
+      "scan_frac_stable": 0.0,
+      "scan_frac_nonperturbative": 0.0,
+      "scan_frac_failed": 0.0,
+      "pyrate_agree": null,
+      "folder": "C:\\Users\\victo\\dev\\metastability-beta-integral\\results\\leptons\\seesaw_typeI_1N",
+      "error": "",
+      "time_s": 13.67
+    },
+    {
+      "index": 2,
+      "name": "seesaw_typeI_3N",
+      "label": "seesaw_typeI_3N",
+      "fields": "3xN(1,1,0)",
+      "yukawas": "y_N_1_L_1;y_N_2_L_2;y_N_3_L_3",
+      "n_yukawas": 3,
+      "anomaly_free": true,
+      "warnings": "",
+      "bench1_mu_I_GeV": 4881300.908629274,
+      "bench1_status": "unstable",
+      "bench2_mu_I_GeV": 16555961701.262472,
+      "bench2_status": "unstable",
+      "sm_mu_I_GeV": 31633548607.718174,
+      "scan_log10_mu_I_min": 3.7915095073672056,
+      "scan_log10_mu_I_max": 10.500147914613867,
+      "scan_frac_unstable": 1.0,
+      "scan_frac_stable": 0.0,
+      "scan_frac_nonperturbative": 0.0,
+      "scan_frac_failed": 0.0,
+      "pyrate_agree": null,
+      "folder": "C:\\Users\\victo\\dev\\metastability-beta-integral\\results\\leptons\\seesaw_typeI_3N",
+      "error": "",
+      "time_s": 13.82
+    }
+  ]
+}

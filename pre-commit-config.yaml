@@ -1,0 +1,21 @@
+# Checks run on every `git commit` (install once: python3 -m pre_commit install)
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: python3 -m mypy
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: pytest-fast
+        name: pytest (without PyR@TE)
+        entry: python3 -m pytest -q
+        language: system
+        types: [python]
+        pass_filenames: false

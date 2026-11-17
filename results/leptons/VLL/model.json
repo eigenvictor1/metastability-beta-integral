@@ -1,0 +1,148 @@
+{
+  "created": "2026-11-17T15:27:15",
+  "higgsflow_version": "0.2.0",
+  "python": "3.13.14",
+  "model": {
+    "name": "VLL",
+    "label": "VLL",
+    "include_sm_mixing": false,
+    "new_fields": [
+      {
+        "name": "F1",
+        "su3": [
+          0,
+          0
+        ],
+        "su2": 2,
+        "Y": "-1/2",
+        "copies": 1
+      },
+      {
+        "name": "F2",
+        "su3": [
+          0,
+          0
+        ],
+        "su2": 2,
+        "Y": "1/2",
+        "copies": 1
+      },
+      {
+        "name": "F3",
+        "su3": [
+          0,
+          0
+        ],
+        "su2": 1,
+        "Y": "0",
+        "copies": 1
+      }
+    ],
+    "yukawas": [
+      {
+        "name": "yt",
+        "fermions": [
+          "Q_3",
+          "uc_3"
+        ],
+        "higgs": "H"
+      },
+      {
+        "name": "y_F1_F3",
+        "fermions": [
+          "F1",
+          "F3"
+        ],
+        "higgs": "H"
+      },
+      {
+        "name": "y_F2_F3_c",
+        "fermions": [
+          "F2",
+          "F3"
+        ],
+        "higgs": "H^*"
+      }
+    ],
+    "excluded_yukawas": []
+  },
+  "sm_inputs": {
+    "Mt": 172.57,
+    "Mh": 125.2,
+    "alpha_s": 0.118,
+    "MW": 80.3692
+  },
+  "sm_couplings_at_Mt": {
+    "g1": 0.3584267285714285,
+    "g2": 0.6476429142857143,
+    "g3": 1.1651599142857143,
+    "yt": 0.9328587999999999,
+    "lam": 0.1261738
+  },
+  "loops": 2,
+  "betas": "native",
+  "threshold_M_default": 1000.0,
+  "scan": {
+    "y": [
+      0.0,
+      0.05,
+      0.1,
+      0.15000000000000002,
+      0.2,
+      0.25,
+      0.30000000000000004,
+      0.35000000000000003,
+      0.4,
+      0.45,
+      0.5,
+      0.55,
+      0.6000000000000001,
+      0.65,
+      0.7000000000000001,
+      0.75,
+      0.8,
+      0.8500000000000001,
+      0.9,
+      0.9500000000000001,
+      1.0
+    ]
+  },
+  "fixed": {
+    "M": 1000.0
+  },
+  "links": {
+    "y": [
+      "y_F1_F3",
+      "y_F2_F3_c"
+    ]
+  },
+  "examples": [
+    {
+      "y": 0.25
+    },
+    {
+      "y": 0.5
+    },
+    {
+      "y": 0.75
+    }
+  ],
+  "closure": {
+    "1": {
+      "yukawa_residual": 1.7763568394002505e-15,
+      "quartic_residual": 1.4210854715202004e-14
+    },
+    "2": {
+      "yukawa_residual": 2.842170943040401e-14,
+      "quartic_residual": 5.684341886080802e-14
+    }
+  },
+  "warnings": [],
+  "conventions": {
+    "potential": "V = lam (H^dag H)^2",
+    "yukawa": "-L \u2283 y C \u03c81 \u03c82 \u03a6 + h.c., \u03a6 = H or H^*, C normalised to max|entry| = 1 per gauge factor",
+    "g1": "SM hypercharge coupling g' (non-GUT)",
+    "beta": "dx/dln(mu) = sum_L beta^(L)/(16 pi^2)^L"
+  },
+  "sm_mu_I_GeV": 31633548607.718174
+}

@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "higgsflow"
+version = "0.2.0"
+description = "Two-loop RG running of the SM plus new Weyl fermions and the Higgs instability scale"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.24", "scipy>=1.10", "sympy>=1.12", "matplotlib>=3.7"]
+
+[project.optional-dependencies]
+pyrate = ["PyYAML>=5.3", "h5py>=3.0"]
+dev = ["pytest>=7", "ruff>=0.5", "mypy>=1.8", "pre-commit>=3"]
+
+[project.scripts]
+higgsflow = "higgsflow.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["pyrate: needs PyR@TE (higgsflow install-pyrate); run with -m pyrate", "slow: long-running"]
+addopts = "-m 'not pyrate'"
+
+[tool.ruff]
+line-length = 120
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E741", "B905"]   # physics names l, I; zip(strict) not needed
+
+[tool.mypy]
+files = ["src/higgsflow"]
+ignore_missing_imports = true      # scipy, sympy, matplotlib, yaml have partial stubs
+check_untyped_defs = true
+warn_unused_ignores = true
