@@ -1,0 +1,43 @@
+{
+  "name": "seesaw_typeI",
+  "defaults": {
+    "scan": {"y": {"logspace": [-1.3, 0.544, 100]},"M": {"logspace": [2.3010299956639812, 7, 100]}},
+    "links": {"y": "all"},
+    "fixed": {"M": 1e2},
+    "benchmarks": [{"y": 0.5}],
+    "run": {"betas": "native", "plots": false, "trace_range": [1e-3, 1e3]},
+    "trs": {"M": 1e3, "samples": 2000, "range": [0, 1.5]}
+  },
+  "models": [
+    {
+      "name": "seesaw_typeI_1N",
+      "fields": ["N:(1,1,0)"],
+      "include_sm_mixing": true,
+      "exclude": ["yNL1", "yNL2"],
+      "links": {"y": ["yNL3"]},
+      "benchmarks": [{"y": 0.5, "M": 1e3}, {"y": 0.5, "M": 1e10}],
+      "examples": [{"y": 0.3, "M": 1e3}, {"y": 0.6, "M": 1e6}, {"y": 0.9, "M": 1e9}],
+      "run": {"plots": true}
+    },
+    {
+      "name": "seesaw_typeI_3N",
+      "fields": ["N:3x(1,1,0)"],
+      "include_sm_mixing": true,
+      "exclude": ["yN1L2", "yN1L3", "yN2L1", "yN2L3", "yN3L1", "yN3L2"],
+      "links": {"y": ["yN1L1", "yN2L2", "yN3L3"]},
+      "benchmarks": [{"y": 0.5, "M": 1e3}, {"y": 0.5, "M": 1e10}],
+      "examples": [{"y": 0.3, "M": 1e3}, {"y": 0.6, "M": 1e6}, {"y": 0.9, "M": 1e9}],
+      "run": {"plots": true}
+    },
+    {
+      "name": "seesaw_typeI_2N",
+      "fields": ["N:2x(1,1,0)"],
+      "include_sm_mixing": true,
+      "links": {"y": "all"},
+      "benchmarks": [{"y": 0.5, "M": 1e3}, {"y": 0.5, "M": 1e10}],
+      "examples": [{"y": 0.3, "M": 1e3}, {"y": 0.6, "M": 1e6}, {"y": 0.9, "M": 1e9}],
+      "run": {"plots": true}
+    }
+  ],
+  "workers": 0
+}

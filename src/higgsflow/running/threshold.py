@@ -46,6 +46,7 @@ class MassError(ValueError):
 
 
 def _xlogx(x):
+    """x ln x, continued to 0 at x = 0."""
     return x * np.log(x) if x > 0 else 0.0
 
 
@@ -65,6 +66,7 @@ def _B0p(x, y):
 
 
 def _A(x):
+    """One-loop tadpole function A(x) = x (ln x - 1) at Q = M (0 for massless states)."""
     return x * (np.log(x) - 1) if x > 0 else 0.0
 
 
@@ -150,6 +152,7 @@ class Matching:
     yt_full: float | None = None
 
     def as_dict(self) -> dict[str, float | None]:
+        """The fields as a dict (written to the run CSV header)."""
         return asdict(self)
 
 
@@ -157,6 +160,7 @@ class ThresholdMatching:
     """Precomputes the mass basis; ``match()`` maps SM values at M to full-theory values."""
 
     def __init__(self, model: Model):
+        """Precompute the Weyl-block Yukawa tensors, the mass matrix and the heavy mass basis."""
         self.model = model
         tens = build_tensors(model)
         N = tens["N"]
@@ -167,6 +171,7 @@ class ThresholdMatching:
 
     # -- coupling tensors -----------------------------------------------------
     def yukawa(self, values: dict) -> np.ndarray:
+        """Yukawa tensor Y^a_IJ (4 real Higgs directions, Weyl indices) for the given coupling values."""
         Y = np.zeros((4, self.N, self.N), dtype=complex)
         for name, arr in self.yuk.items():
             Y += float(values.get(name, 0.0)) * arr
@@ -174,6 +179,10 @@ class ThresholdMatching:
 
     # -- effective potential --------------------------------------------------
     def V_heavy(self, h: float, Y: np.ndarray, a: int = H_DIRECTION) -> float:
+        """One-loop effective potential of the heavy fermions at Higgs value h (units of M).
+
+        The heavy masses are the largest singular values of M0 + h Y^a; V = -2 Σ f(m²)/16π².
+        """
         m = np.linalg.svd(self.M0 + h * Y[a], compute_uv=False)
         mh = np.sort(m)[::-1][: self.nH]               # the heavy states
         x = mh ** 2

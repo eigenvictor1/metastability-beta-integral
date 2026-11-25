@@ -30,15 +30,18 @@ Every input is a JSON file with the same structure, whether it holds one model o
 
 ```powershell
 higgsflow run models\vll_doublet_singlet.json     # one model
-higgsflow run models\leptons.json                 # two models
-higgsflow run models\five_models.json --workers 0 # 0 = all cores
+higgsflow run models\seesaw_typeI.json            # three models
+higgsflow run models\mixed.json --workers 0         # 0 = all cores
+higgsflow run models\seesaw_typeI.json --no-trs   # without the trace plots
+higgsflow replot models\mixed.json                 # redraw the plots from stored data (no running)
+higgsflow replot models\mixed.json --only Q5 T2    # only some models
 
-higgsflow yukawas models\leptons.json             # Yukawas found for each model
+higgsflow yukawas models\seesaw_typeI.json        # Yukawas found for each model
 higgsflow betas models\vll_doublet_singlet.json --source both   # betas + native/PyR@TE comparison
 ```
 
-Results go to `results\<name of the file>\` (see Output). With one model, the workers share its scan points. With several, each worker takes
-whole models.
+Results go to `results\<name of the file>\` (see Output). With fewer models than cores, the models run one after the other and all cores share each
+scan; with more, each core takes whole models. A long scan logs its progress every 10%.
 
 From Python: `examples/scripted_scan.py` analyses one model, and
 `examples/generated_models.py` generates models from a rule and runs them like a file.
@@ -67,29 +70,51 @@ From Python: `examples/scripted_scan.py` analyses one model, and
 | key | where | meaning |
 |---|---|---|
 | `name` | top | name of the run, i.e. its folder in `results/` (default: the file name) |
-| `defaults` | top | any per-model key below, shared by all models |
+| `defaults` | top | **required**: the `scan`, plus defaults for any per-model key below |
+| `scan` | defaults | 1 or 2 parameters: `M` (GeV) and/or Yukawas (or link aliases) at μ = M; the same grid for every model |
 | `models` | top | **required** list, one entry per model |
-| `workers` | top | number of processes; 0 = all cores (default) |
+| `workers` | top | number of processes; 0 = all cores (default). A study first computes the missing beta functions in parallel (as many at once as memory allows, ~3 GB each), then runs the models one after the other, each scan on all processes |
 | `name` | model | name of the theory in plot and folder names (default: a label from the representations) |
 | `fields` | model | **required** list of new left-handed Weyl fields |
 | `include_sm_mixing`, `exclude` | model | also generate new–SM Yukawas / switch off some Yukawas |
-| `scan` | model | 1 or 2 parameters: `M` (GeV) and/or Yukawas at μ = M |
-| `links` | model | `{alias: [Yukawas]}`, or `"all"`: one parameter drives several Yukawas |
+| `links` | model | `{alias: [Yukawas]}`, `{alias: {Yukawa: factor}}` or `"all"`: one parameter drives several Yukawas (each = factor × parameter) |
 | `fixed` | model | values of parameters that aren't scanned |
 | `examples` | model | points drawn in `running-<theory>.pdf` |
 | `benchmarks` | model | points whose μ_I goes into the summary |
-| `run` | model | `betas` (`native`/`pyrate`/`both`), `loops`, `M` (default threshold), `plots`, `threshold` (`one-loop`/`tree`) |
+| `run` | model | `betas` (`native`/`pyrate`/`both`), `loops`, `M` (default threshold), `plots`, `threshold` (`one-loop`/`tree`), `trace_range` (range of Tr[(YY†)²] shown in `inscale-` plots, default `[1e-3, 1e3]`; the axis is drawn as Tr[(YY†)²]^(1/4)) |
 | `sm_inputs` | model | `Mt`, `Mh`, `alpha_s`, `MW` |
-| `numerics` | model | optional: `rtol`, `atol`, `n_points`, `mu_max`, `max_rhs_calls` (see `settings.py`) |
+| `numerics` | model | optional: `rtol`, `atol`, `n_points`, `mu_max`, `max_rhs_calls`, `boundary_steps` (see `settings.py`) |
+| `trs` | model | optional trace plot: `{"M": 1e3, "samples": 2000, "range": [0, 1.5]}` — fixed M, number of Yukawa points (spread evenly over the trace plane), range of their size √(Σy²); switch it off with `"enabled": false` (or `"trs": false`), or for the whole run with `higgsflow run ... --no-trs` (`--trs` turns it on where it has settings) |
 
-A model entry overrides `defaults` key by key, one level deep. For example,
+`scan` is allowed only in `defaults`, so all models of a file share one grid; a model
+with its own `scan` is an error. Its parameter names must exist in every model, normally
+through `links` (e.g. `"y"` as an alias). Any other key of a model entry overrides
+`defaults` key by key, one level deep. For example,
 `"run": {"plots": true}` changes only `plots`.
 
 * Fields are written `"(su3,su2,Y)"`, with optional prefixes: `"N:2x(1,1,0)"` gives two
   copies of a singlet named N.
   - SU(3) is `1, 3, 3b, 6, 6b, 8, 10, 15, 27` or Dynkin labels `"p-q"`.
   - Unnamed fields are called F1, F2, …; copies are suffixed `_1`, `_2`.
-  - A field can also be a dict `{"name", "su3", "su2", "Y", "copies"}`.
+  - A field can also be a dict `{"name", "su3", "su2", "Y", "copies", "mass"}`.
+  - A suffix `@mass` (GeV) gives the field its own fixed mass, e.g. `"X5:(1,5,0)@9.6e3"` (the
+    Minimal Dark Matter quintuplet). It then decouples at that mass, not at the scanned M:
+    below it, it is absent; above it, it enters the gauge running. Such fields must not have
+    Yukawa couplings. The SM reference run leaves them out.
+* `"singlet": {"m_S": 1e8, "lamS": 0.2, "kappa": 0.2, "yS": "derived"}` (in a model entry
+  or in `defaults`) adds a complex scalar singlet S, with V ⊃ λ_S|S|⁴ + κ(H†H)|S|², that gives
+  the new fermions their mass: −L ⊃ ½ y_S S ψM₀ψ + h.c., so M = y_S v_S/√2 (fixed-mass fields
+  keep a bare mass).
+  - m_S is the mass of the radial mode; λ_S and κ are given at μ = m_S.
+  - `"yS": "derived"` sets y_S = 2√λ_S M/m_S at each point (from m_S² = 2λ_S v_S²); a
+    number fixes it.
+  - S is integrated out at m_S with the tree-level matching λ_SM = λ − κ²/(4λ_S): running up,
+    λ jumps by +κ²/(4λ_S). Above m_S, y_S, λ_S and κ run with the two-loop betas of the
+    native engine (not available with PyR@TE).
+  - Example: `models/mixed_singlet.json`, the 13 models of `mixed.json` with S at 10⁸ GeV.
+* Yukawa names have no underscores: `y` + the two component names (copy suffix included,
+  e.g. `N1`, `L3`) + `c` if the operator uses H\*. Examples: `yNL3` (N L₃ H), `yL4cNc`
+  (L4c N H\*). Run `python3 -m higgsflow yukawas <file>` to list them for a model.
 * An axis is a list of values, `{"linspace": [a, b, n]}` or `{"logspace": [a, b, n]}`
   (exponents).
 
@@ -102,13 +127,32 @@ Each run (one JSON file) gets its own folder, named after the file's `"name"`
 results/<run>/
   summary.csv, summary.json    one row per theory in the run
   running-<theory>.pdf         λ(μ) for the example points and the SM, plus the Yukawas
-  inscale-<theory>.pdf         μ_I against 1 or 2 parameters (M, if scanned, is always on the x axis)
+  inscale-<theory>.pdf         μ_I against 1 or 2 parameters (M, if scanned, is always on the x axis);
+                               the Yukawa parameter is shown as Tr[(YY†)²]^(1/4) (log scale), and region
+                               boundaries (non-perturbative, stable) are located by bisection
+  inscale-min-<theory>.pdf     the same map with log10 of μ_min (scale of the minimum of λ) as
+                               cornflower-blue dashed contours and shading (0.1, then 0.05 more opaque per
+                               contour towards lower μ_min), and a thicker dashed line where a
+                               minimum of λ appears
+  inscale-lambdamin-<theory>.pdf  the μ_I map split by the lowest λ of the running (λ_min, or λ where the
+                               running stops if still decreasing; column lam_low of scan.csv): a yellow
+                               dashed line at λ_min = −0.06, "metastable" (yellow) above it, "unstable" (red)
+                               below; "stable" where there is no instability scale
+  inscale-trs-<theory>.pdf     (with "trs") μ_I at fixed M against Tr(YY†) and Tr[(YY†)²]^(1/4), for
+                               points of all new Yukawas spread evenly over the reachable region
   backup/                      older plots and summaries, renamed <name>_<YYYY-MM-DD_HHMMSS>
   <theory>/
     model.json                 fields, couplings, conventions, inputs and settings
     betas/                     betas_*.tex/.json and comparison.md (native vs PyR@TE)
-    data/                      running_*.csv and scan.csv (plots can be remade from these)
+    data/                      running_*.csv, scan.csv, boundaries.csv, trs_samples.csv, and
+                               plotdata.pkl: everything the plots show, so that `higgsflow replot`
+                               can redraw them (e.g. after a style change) without running again
 ```
+
+The traces use the Yukawa matrix of the new fermions along the neutral Higgs direction,
+Y, in the convention −L ⊃ ½ Y_IJ φ ψ_I ψ_J (two-component fermions; y_t excluded). For the
+seesaw with one N, Tr(YY†) = y² and Tr[(YY†)²] = y⁴/2. With n equal couplings the two traces
+are tied, so the trace plot fills a region only for models with several independent Yukawas.
 
 `<theory>` is the model's `name`, or a label built from its representations, e.g.
 `(1,1,0)+(1,2,-1_2)+(1,2,1_2)`. Plots are written only for models with
@@ -133,7 +177,9 @@ src/higgsflow/
   running/   boundary.py       SM MS-bar couplings at M_t (Buttazzo et al.)
              threshold.py      one-loop matching at M (heavy-fermion masses, δλ, Higgs Z factor)
              solver.py         running with threshold M, stopping events
-             scan.py           1D/2D scans, optionally in parallel
+             scan.py           1D/2D scans and random samples, optionally in parallel
+             traces.py         Tr(YY†), Tr[(YY†)²] and the trace axis of the plots
+             strength.py       y_eff of the new Yukawas (perturbativity limit)
   output/    layout.py, plots.py
   config.py    JSON -> Study (list of RunSpec)   cli.py  `higgsflow` command
   settings.py  numerical settings (tolerances, grids, plot resolution)
@@ -178,8 +224,16 @@ python3 -m pre_commit install     # once: run ruff, mypy and the fast tests on e
   - For the type-I seesaw this gives δλ = −y⁴/16π² and Π' = −y²/(2·16π²).
   - `model.json` records the matching used. `running_<k>.csv` gives δλ, Π', and λ and
     y_t on both sides of the threshold; `summary.csv` gives δλ at each benchmark.
-* The running stops at λ = 0 (unstable, μ_I), at a perturbativity limit
-  (|g|, |y| > √(4π) or |λ| > 4π), or at M_Pl = 1.22·10¹⁹ GeV (stable).
+* The running continues past λ = 0 and stops at a perturbativity limit or at
+  M_Pl = 1.22·10¹⁹ GeV. A point is unstable if λ crossed zero on the way (μ_I = first
+  crossing), otherwise non-perturbative or stable. A minimum of λ is a point where β_λ turns
+  from negative to positive inside that range (or at μ = M, if β_λ jumps there from negative
+  to positive); the end of the running is never taken as a minimum. The deepest minimum is
+  kept: `lam_min` and `mu_min_GeV` in scan.csv (NaN if λ has none), diamonds in the running
+  plot. The limits are |g|, |y_t| > √(4π), |λ| > 4π, and for the
+  new Yukawas together y_eff > √(4π), with y_eff = √(λ_max(Σ_a Y^a Y^a†)/2) the strength of
+  the whole Yukawa matrix (basis independent; y_eff = y for one N, √6·y for two N coupled
+  with the same y to all three leptons).
 
 ## Notes on the PyR@TE comparison
 

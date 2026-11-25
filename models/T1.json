@@ -1,0 +1,17 @@
+{
+  "name": "T1",
+  "defaults": {
+    "scan": {"y": {"logspace": [-1.3, 0.544, 60]}, "M": {"logspace": [2.3010299956639812, 7, 60]}},
+    "links": {"y": "all"},
+    "benchmarks": [{"y": 0.5, "M": 1e3}, {"y": 0.5, "M": 1e6}],
+    "run": {"betas": "native", "plots": true, "trace_range": [1e-3, 1e3]},
+    "trs": {"M": 1e3, "samples": 1500, "range": [0, 1.5]}
+  },
+  "models": [
+    {"name": "T1_1", "fields": ["(3,3,-1/3)", "(3b,3,1/3)"], "include_sm_mixing": true, "exclude": ["yF2Q1c", "yF2Q2c"]},
+    {"name": "T1_2", "fields": ["2x(3,3,-1/3)", "2x(3b,3,1/3)"], "include_sm_mixing": true, "exclude": ["yF21Q1c", "yF21Q2c", "yF22Q1c", "yF22Q2c"]},
+    {"name": "T1_3", "fields": ["3x(3,3,-1/3)", "3x(3b,3,1/3)"], "include_sm_mixing": true, "exclude": ["yF21Q1c", "yF21Q2c", "yF22Q1c", "yF22Q2c", "yF23Q1c", "yF23Q2c"]},
+    {"name": "T1_4", "fields": ["4x(3,3,-1/3)", "4x(3b,3,1/3)"], "include_sm_mixing": true, "exclude": ["yF21Q1c", "yF21Q2c", "yF22Q1c", "yF22Q2c", "yF23Q1c", "yF23Q2c", "yF24Q1c", "yF24Q2c"]}
+  ],
+  "workers": 0
+}

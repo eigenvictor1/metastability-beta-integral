@@ -2,12 +2,14 @@
 
 Fermions: N left-handed Weyl components + their conjugates (2N indices);
 y = diag(Y, Y*), T^A = diag(t^A, -t^A*). Scalars: the four real components of
-H = (φ1 + i φ2, φ3 + i φ4)/√2. Gauge index A: 0 = U(1), 1-3 = SU(2), 4-11 = SU(3).
+H = (φ1 + i φ2, φ3 + i φ4)/√2, then (with a singlet) S = (s1 + i s2)/√2 as φ5, φ6.
+Gauge index A: 0 = U(1), 1-3 = SU(2), 4-11 = SU(3).
 """
 from __future__ import annotations
 
 import numpy as np
 
+from ..theory import couplings as cp
 from ..theory import group_theory as gt
 from ..theory.model import Model
 
@@ -31,6 +33,14 @@ def higgs_embedding():
 
 
 def build_tensors(model: Model):
+    """All numerical tensors of model in the doubled Weyl basis.
+
+    Returns dict: N (number of Weyl components), NS (number of real scalars: 4, or 6 with
+    the singlet), T (12, 2N, 2N) fermion generators, f (12,12,12) structure constants,
+    theta (12, NS, NS) scalar generators, ybasis {coupling: (NS, 2N, 2N)} Yukawa tensor per
+    unit coupling, quartics {coupling: (NS,)*4} quartic tensor per unit coupling
+    (V = L_abcd φ_a φ_b φ_c φ_d / 4!; λ (H†H)², λ_S |S|⁴, κ (H†H)|S|²), L = quartics["lam"].
+    """
     comps = model.components()
     N = sum(c.field.dim for c in comps)
     t = np.zeros((NGI, 2 * N, 2 * N), dtype=complex)
@@ -52,7 +62,11 @@ def build_tensors(model: Model):
     f[1:4, 1:4, 1:4] = gt.structure_constants(gt.su2_generators(2))
     f[4:, 4:, 4:] = gt.structure_constants(gt.gell_mann() / 2)
 
-    U, theta = higgs_embedding()
+    U, theta4 = higgs_embedding()
+    singlet = model.singlet is not None
+    NS = 6 if singlet else 4
+    theta = np.zeros((NGI, NS, NS), dtype=complex)
+    theta[:, :4, :4] = theta4                        # S is a gauge singlet
 
     ybasis = {}
     cmap = {c.name: c for c in comps}
@@ -60,7 +74,8 @@ def build_tensors(model: Model):
         ca, cb = cmap[yk.f1], cmap[yk.f2]
         Phi = U.conj() if yk.conj_higgs else U          # dΦ_k/dφ_s
         blk = np.einsum("ijk,ks->sij", yk.C, Phi)
-        Y = np.zeros((4, N, N), dtype=complex)
+        Y = np.zeros((NS, N, N), dtype=complex)
+        blk = np.concatenate([blk, np.zeros((NS - 4, *blk.shape[1:]))]) if NS > 4 else blk
         ia = slice(ca.offset, ca.offset + ca.field.dim)
         ib = slice(cb.offset, cb.offset + cb.field.dim)
         if ca.name == cb.name:
@@ -68,15 +83,47 @@ def build_tensors(model: Model):
         else:
             Y[:, ia, ib] += blk
             Y[:, ib, ia] += blk.transpose(0, 2, 1)
-        yd = np.zeros((4, 2 * N, 2 * N), dtype=complex)
-        yd[:, :N, :N] = Y
-        yd[:, N:, N:] = Y.conj()
-        ybasis[yk.name] = yd
+        ybasis[yk.name] = _doubled(Y)
+    if model.has_yS:
+        # -L ⊃ ½ y_S S ψ M0 ψ + h.c. with S = (φ5 + i φ6)/√2; fixed-mass fields keep a bare mass
+        from ..running.threshold import mass_matrix
+        at_M = model.with_fixed(0)
+        M0 = mass_matrix(at_M)
+        full = {c.name: c.offset for c in comps}
+        idx = np.concatenate([full[c.name] + np.arange(c.field.dim) for c in at_M.components()])
+        Y = np.zeros((NS, N, N), dtype=complex)
+        Y[4][np.ix_(idx, idx)] = M0 / np.sqrt(2)
+        Y[5][np.ix_(idx, idx)] = 1j * M0 / np.sqrt(2)
+        ybasis[cp.YS.name] = _doubled(Y)
 
-    d = np.eye(4)
-    L = 2 * (np.einsum("ab,cd->abcd", d, d) + np.einsum("ac,bd->abcd", d, d)
-             + np.einsum("ad,bc->abcd", d, d))
-    return dict(N=N, T=t, f=f, theta=theta, ybasis=ybasis, L=L)
+    H, S = np.zeros(NS), np.zeros(NS)
+    H[:4], S[4:] = 1, 1
+    dH, dS = np.diag(H), np.diag(S)
+    quartics = {cp.QUARTIC: _pairings(dH, dH)}
+    if singlet:
+        quartics[cp.LAMS.name] = _pairings(dS, dS)
+        quartics[cp.KAP.name] = 0.5 * (_pairings(dH, dS) + _pairings(dS, dH))
+    return dict(N=N, NS=NS, T=t, f=f, theta=theta, ybasis=ybasis, quartics=quartics,
+                L=quartics[cp.QUARTIC])
+
+
+def _doubled(Y: np.ndarray) -> np.ndarray:
+    """diag(Y, Y*) in the doubled fermion basis."""
+    ns, N = Y.shape[0], Y.shape[1]
+    yd = np.zeros((ns, 2 * N, 2 * N), dtype=complex)
+    yd[:, :N, :N] = Y
+    yd[:, N:, N:] = Y.conj()
+    return yd
+
+
+def _pairings(d1: np.ndarray, d2: np.ndarray) -> np.ndarray:
+    """2 Σ over the three pairings of (d1)_xy (d2)_zw, symmetrised: for d1 = d2 = δ on n real
+    fields this is the tensor of (φ·φ)²/4; for (δ_H, δ_S) + (δ_S, δ_H), times ½, that of
+    (φ_H·φ_H)(φ_S·φ_S)/4 = (H†H)|S|²."""
+    e = np.einsum
+    out = (e("ab,cd->abcd", d1, d2) + e("ac,bd->abcd", d1, d2) + e("ad,bc->abcd", d1, d2))
+    out = out + out.transpose(2, 3, 0, 1)
+    return out
 
 
 def check_gauge_invariance(tens) -> float:

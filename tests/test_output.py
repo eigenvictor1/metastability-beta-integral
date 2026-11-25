@@ -16,7 +16,8 @@ def test_label_from_reps():
 def test_backup(tmp_path):
     prepare_folder("VLL", tmp_path)
     names = plot_names("VLL")
-    assert names == ("running-VLL.pdf", "inscale-VLL.pdf")
+    assert names == ("running-VLL.pdf", "inscale-VLL.pdf", "inscale-trs-VLL.pdf", "inscale-min-VLL.pdf",
+                     "inscale-lambdamin-VLL.pdf")
     p = tmp_path / names[0]
     p.write_text("old")
     t = time.mktime((2026, 1, 2, 3, 4, 5, 0, 0, -1))

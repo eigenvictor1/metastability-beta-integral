@@ -75,11 +75,13 @@ def su3_label(pq: tuple[int, int]) -> str:
 # --------------------------------------------------------------------------
 
 def su3_dim(pq) -> int:
+    """Dimension of the SU(3) irrep (p, q)."""
     p, q = pq
     return (p + 1) * (q + 1) * (p + q + 2) // 2
 
 
 def su3_casimir(pq) -> Fraction:
+    """Quadratic Casimir C2(p, q), with C2(3) = 4/3."""
     p, q = pq
     return Fraction(p * p + q * q + p * q + 3 * p + 3 * q, 3)
 
@@ -98,11 +100,13 @@ def su3_anomaly(pq) -> Fraction:
 
 
 def su2_casimir(dim) -> Fraction:
+    """Quadratic Casimir j(j+1) of the SU(2) irrep of dimension dim."""
     j = Fraction(dim - 1, 2)
     return j * (j + 1)
 
 
 def su2_index(dim) -> Fraction:
+    """Dynkin index of the SU(2) irrep, T(2) = 1/2."""
     return Fraction(dim) * su2_casimir(dim) / 3
 
 
@@ -128,6 +132,7 @@ def su2_generators(dim: int) -> np.ndarray:
 
 
 def gell_mann() -> np.ndarray:
+    """The eight Gell-Mann matrices λ^a (generators of the 3 are λ^a/2)."""
     l = np.zeros((8, 3, 3), dtype=complex)
     l[0][0, 1] = l[0][1, 0] = 1
     l[1][0, 1], l[1][1, 0] = -1j, 1j
@@ -160,6 +165,7 @@ def _orth_basis(M: np.ndarray, tol=1e-9) -> np.ndarray:
 
 
 def _null_space(M: np.ndarray, tol=1e-9) -> np.ndarray:
+    """Orthonormal basis (columns) of the null space of M, via SVD."""
     if M.shape[0] == 0:
         return np.eye(M.shape[1], dtype=complex)
     _, s, vh = np.linalg.svd(M)
@@ -180,6 +186,7 @@ def _su3_generators_direct(p: int, q: int) -> np.ndarray:
     eye3 = np.eye(3)
 
     def kron_list(mats):
+        """Kronecker product of a list of matrices."""
         out = np.array([[1.0 + 0j]])
         for m in mats:
             out = np.kron(out, m)
@@ -192,6 +199,7 @@ def _su3_generators_direct(p: int, q: int) -> np.ndarray:
 
     # Symmetriser within the p upper and within the q lower slots
     def perm_matrix(perm):
+        """Matrix that permutes the n tensor slots of (C^3)^⊗n according to perm."""
         P = np.zeros((D, D))
         for idx in product(range(3), repeat=n):
             new = tuple(idx[perm[k]] for k in range(n))
@@ -228,6 +236,10 @@ def _su3_generators_direct(p: int, q: int) -> np.ndarray:
 
 @cache
 def su3_generators(pq) -> np.ndarray:
+    """Hermitian generators of the irrep (p, q), shape (8, d, d).
+
+    For p < q they are -t* of (q, p), so that R and Rbar live in conjugate bases.
+    """
     p, q = pq
     if p >= q:
         return _su3_generators_direct(p, q)

@@ -8,7 +8,9 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
+import pickle
 import platform
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -22,18 +24,21 @@ from .output.layout import (
     backup_files,
     plot_names,
     prepare_folder,
+    write_boundaries_csv,
     write_json,
     write_run_csv,
+    write_samples_csv,
     write_scan_csv,
 )
-from .output.plots import plot_instability, plot_running
 from .paths import results_root as default_results_root
+from .paths import short
 from .pyrate.compare import ComparisonReport, compare, map_conventions
 from .rge.engine import compute_betas
 from .rge.system import BetaSystem
-from .running.scan import NO_NEW_PHYSICS, ScanResult, resolve_params, run_scan
+from .running.scan import NO_NEW_PHYSICS, SampleResult, ScanResult, resolve_params, run_samples, run_scan
 from .running.solver import Runner, RunResult
 from .running.threshold import MassError, ThresholdMatching
+from .running.traces import TR4R, YukawaTraces, with_root_axis, with_trace_axis
 from .theory import couplings as cp
 from .theory.model import Model
 
@@ -56,6 +61,7 @@ class Analysis:
     overlay_runs: list[RunResult] = field(default_factory=list)   # PyR@TE betas (betas="both")
     overlay_scan: ScanResult | None = None
     report: ComparisonReport | None = None
+    samples: SampleResult | None = None                           # trace plot (spec.trs)
 
 
 # --------------------------------------------------------------------------
@@ -63,11 +69,14 @@ class Analysis:
 # --------------------------------------------------------------------------
 
 def run_analysis(spec: RunSpec, *, run_name: str | None = None, results_root: str | Path | None = None,
-                 pyrate_dir: str | Path | None = None) -> Analysis:
+                 pyrate_dir: str | Path | None = None, announce: bool = True,
+                 details: bool = True) -> Analysis:
     """Compute betas, run examples, scan and benchmarks, write plots + data.
 
     run_name: results go to results/<run_name>/ (default: the model's label); the plots are
-    running-<theory>.pdf and inscale-<theory>.pdf there, the data in <theory>/.
+    running-, inscale-, inscale-min-, inscale-lambdamin- and inscale-trs-<theory>.pdf there, the data in <theory>/.
+    announce: log the results folder and the beta functions used (a study does it once itself).
+    details: log the model's Yukawa couplings.
     """
     spec = spec.prepared()
     model = spec.model
@@ -75,24 +84,36 @@ def run_analysis(spec: RunSpec, *, run_name: str | None = None, results_root: st
         log.warning(w)
     run_folder = Path(results_root or default_results_root()) / (run_name or model.label())
     folder = prepare_folder(model.label(), run_folder)
-    log.info("results folder: %s", run_folder)
-    log.info("Yukawa couplings: %s", "; ".join(model.yukawa_invariants()))
+    if announce:
+        log.info("results folder: %s", short(run_folder))
+    if details:
+        log.info("Yukawa couplings: %s", "; ".join(model.yukawa_invariants()))
 
+    model.check_fixed()
+    if announce:
+        log.info("%s", betas_text(spec))
+        for line in fixed_text(model):
+            log.info("%s", line)
     systems, sm, report = compute_systems(model, spec.betas, spec.loops, pyrate_dir)
-    runners, threshold_used = build_runners(spec, systems, sm)
+    steps = compute_steps(model, systems, spec.loops, pyrate_dir)
+    runners, threshold_used = build_runners(spec, systems, sm, steps)
     main = "native" if "native" in runners else "pyrate"
     a = Analysis(spec, folder, run_folder, systems, runners[main], threshold_used,
                  runs=run_points(runners[main], spec.examples or [], spec),
-                 sm_run=runners[main].run({}, NO_NEW_PHYSICS, spec.inputs),
-                 scan=_scan(runners[main], spec),
+                 sm_run=runners[main].run({}, NO_NEW_PHYSICS, spec.inputs, sm_only=True),
+                 scan=_scan(runners[main], spec, f"{model.label()}: scanning"),
                  benchmarks=run_points(runners[main], spec.benchmarks, spec),
                  report=report)
     if spec.betas == "both":
         a.overlay_runs = run_points(runners["pyrate"], spec.examples or [], spec)
-        a.overlay_scan = _scan(runners["pyrate"], spec)
+        a.overlay_scan = _scan(runners["pyrate"], spec, f"{model.label()}: scanning (PyR@TE)")
+    if spec.trs is not None and model.new_yukawa_names():
+        a.samples = run_samples(runners[main], YukawaTraces(model), model.new_yukawa_names(), spec.trs.M,
+                                spec.trs.samples, spec.trs.range, spec.inputs, spec.workers,
+                                f"{model.label()}: sampling traces at fixed M")
 
     write_results(a)
-    log.info("done: %s", folder)
+    log.debug("done: %s", short(folder))
     return a
 
 
@@ -109,12 +130,12 @@ def compute_systems(model: Model, betas: str, loops: int, pyrate_dir: str | Path
     """
     systems, sm = {}, {}
     if betas in ("native", "both"):
-        log.info("computing native two-loop betas")
+        log.debug("computing native betas")
         systems["native"] = compute_betas(model, loops)
         sm["native"] = compute_betas(Model(), loops)
     if betas in ("pyrate", "both"):
         from .pyrate.bridge import run_pyrate
-        log.info("computing betas with PyR@TE")
+        log.debug("computing betas with PyR@TE")
         systems["pyrate"] = run_pyrate(model, loops, pyrate_dir=pyrate_dir)
         sm["pyrate"] = run_pyrate(Model(), loops, pyrate_dir=pyrate_dir)
     if not systems:
@@ -131,17 +152,80 @@ def compute_systems(model: Model, betas: str, loops: int, pyrate_dir: str | Path
     return systems, sm, report
 
 
-def build_runners(spec: RunSpec, systems: dict[str, BetaSystem], sm: dict[str, BetaSystem]
-                  ) -> tuple[dict[str, Runner], str]:
+def betas_text(spec: RunSpec) -> str:
+    """E.g. 'beta functions: native, 2-loop, one-loop matching at M'."""
+    src = {"both": "native and PyR@TE"}.get(spec.betas, spec.betas)
+    return f"beta functions: {src}, {spec.loops}-loop, {spec.threshold} matching at M"
+
+
+def fixed_text(model: Model) -> list[str]:
+    """One line per field with its own mass, and one for the singlet."""
+    out = [f"{f.name}{f.rep()} decouples at its own mass, {f.mass:.3g} GeV" for f in model.fixed_fields]
+    if model.singlet is not None:
+        sg = model.singlet
+        ys = "2√λ_S M/m_S" if sg.yS is None else f"{sg.yS:g}"
+        out.append(f"singlet S: m_S = {sg.m_S:.3g} GeV, λ_S = {sg.lamS:g}, κ = {sg.kappa:g}, "
+                   f"y_S = {ys} (λ jumps by κ²/4λ_S = {sg.shift:.3g} at m_S)")
+    return out
+
+
+def step_models(model: Model):
+    """(state, theory) for every theory between thresholds (fixed-mass fields, singlet S),
+    keyed by (number of fixed-mass fields active, above M, above m_S); the SM and the full
+    theory are not included."""
+    k = len(model.fixed_fields)
+    has_S = model.singlet is not None
+    for n in range(k + 1):
+        for above_M in (False, True):
+            for above_S in ((False, True) if has_S else (False,)):
+                state = (n, above_M, above_S)
+                if state in ((0, False, False), (k, True, has_S)):
+                    continue
+                yield state, model.with_fixed(n, scanned=above_M, singlet=above_S)
+
+
+def native_models(spec: RunSpec) -> list[Model]:
+    """Every theory whose native beta functions run_analysis(spec) needs (SM included)."""
+    if spec.betas not in ("native", "both"):
+        return []
+    model = spec.prepared().model
+    return [Model(), model, *(m for _, m in step_models(model))]
+
+
+def compute_steps(model: Model, systems: dict[str, BetaSystem], loops: int,
+                  pyrate_dir: str | Path | None = None) -> dict[str, dict]:
+    """Per beta source, the beta functions of the theories between thresholds (see step_models)."""
+    out: dict[str, dict] = {s: {} for s in systems}
+    if model.singlet is not None and "pyrate" in systems:
+        raise ValueError("the scalar singlet is only implemented with the native betas")
+    for state, m in step_models(model):
+        if "native" in systems:
+            out["native"][state] = compute_betas(m, loops)
+        if "pyrate" in systems:
+            from .pyrate.bridge import run_pyrate
+            bs = run_pyrate(m, loops, pyrate_dir=pyrate_dir)
+            if "native" in systems:
+                _, _, bs = map_conventions(out["native"][state], bs)
+            out["pyrate"][state] = bs
+    return out
+
+
+def build_runners(spec: RunSpec, systems: dict[str, BetaSystem], sm: dict[str, BetaSystem],
+                  steps: dict[str, dict] | None = None) -> tuple[dict[str, Runner], str]:
     """One Runner per beta source; returns them and the matching actually used."""
     matching, used = None, "tree"
-    if spec.threshold == "one-loop" and spec.model.new_fields:
+    model = spec.model
+    if model.fixed_fields or model.singlet is not None:
+        model = model.with_fixed(0)                        # the fields at M only
+    if spec.threshold == "one-loop" and model.new_fields:
         try:
-            matching, used = ThresholdMatching(spec.model), "one-loop"
+            matching, used = ThresholdMatching(model), "one-loop"
         except MassError as exc:
             log.warning("no one-loop threshold matching, using tree level: %s", exc)
             used = f"tree ({exc})"
-    runners = {s: Runner(systems[s], sm[s], spec.loops, matching, spec.numerics) for s in systems}
+    masses = [f.mass for f in spec.model.fixed_fields if f.mass is not None]
+    runners = {s: Runner(systems[s], sm[s], spec.loops, matching, spec.numerics, model,
+                         (steps or {}).get(s), masses, spec.model.singlet) for s in systems}
     return runners, used
 
 
@@ -157,8 +241,10 @@ def run_points(runner: Runner, points: list[dict[str, float]], spec: RunSpec) ->
     return runs
 
 
-def _scan(runner: Runner, spec: RunSpec) -> ScanResult:
-    return run_scan(runner, spec.scan, spec.fixed, spec.links, spec.inputs, spec.M, workers=spec.workers)
+def _scan(runner: Runner, spec: RunSpec, label: str = "Scanning") -> ScanResult:
+    """Run the spec's scan with the given runner (1D or 2D grid, possibly in parallel)."""
+    return run_scan(runner, spec.scan, spec.fixed, spec.links, spec.inputs, spec.M, workers=spec.workers,
+                    label=label)
 
 
 # --------------------------------------------------------------------------
@@ -166,6 +252,7 @@ def _scan(runner: Runner, spec: RunSpec) -> ScanResult:
 # --------------------------------------------------------------------------
 
 def write_results(a: Analysis) -> None:
+    """Write everything of an analysis: plots (if spec.plots), data CSVs, betas and model.json."""
     if a.spec.plots:
         _write_plots(a)
     _write_data(a)
@@ -174,25 +261,129 @@ def write_results(a: Analysis) -> None:
 
 
 def _write_plots(a: Analysis) -> None:
+    """Back up old plots of this theory and draw running-, inscale-, inscale-min-,
+    inscale-lambdamin- and inscale-trs-<theory>.pdf."""
+    draw_plots(a.run_folder, plot_data(a))
+
+
+PLOT_DATA = "plotdata.pkl"        # <theory>/data/: everything the plots show (see replot)
+PLOT_DATA_VERSION = 1
+
+
+def plot_data(a: Analysis) -> dict:
+    """What the plots of an analysis show, ready to draw: titles, the example runs, and the
+    scan with the Yukawa axis already shown as Tr((YY†)²)^(1/4) (if the scan has one)."""
     theory = a.spec.model.label()
-    running, inscale = plot_names(theory)
-    for p in backup_files(a.run_folder, (running, inscale)):
-        log.info("old plot moved to %s", p)
-    plot_running(a.run_folder / running, a.runs, a.sm_run, a.overlay_runs or None,
-                 title=f"{theory}: running of λ")
-    plot_instability(a.run_folder / inscale, a.scan, a.overlay_scan,
-                     title=f"{theory}: instability scale")
+    traces = YukawaTraces(a.spec.model)
+    scan = with_root_axis(with_trace_axis(a.scan, traces, a.spec.links, a.spec.M))
+    overlay = (with_root_axis(with_trace_axis(a.overlay_scan, traces, a.spec.links, a.spec.M))
+               if a.overlay_scan is not None else None)
+    return {"version": PLOT_DATA_VERSION, "theory": theory,
+            "name": f"{theory}, {a.spec.model.fields_text()}",       # plot titles: name and representations
+            "runs": a.runs, "sm_run": a.sm_run, "overlay_runs": a.overlay_runs,
+            "scan": scan, "overlay": overlay, "samples": a.samples,
+            "limits": {TR4R: tuple(v ** 0.25 for v in a.spec.trace_range)}}
+
+
+def draw_plots(run_folder: Path, d: dict, backup: bool = True) -> None:
+    """Draw the plots of one theory from plot_data() (or stored plot data) into run_folder;
+    with backup, older plots of the theory are moved to backup/ first."""
+    from .output.plots import plot_instability, plot_running, plot_traces  # matplotlib only where plotting
+    theory, name = d["theory"], d["name"]
+    running, inscale, trs, inscale_min, inscale_lammin = plot_names(theory)
+    if backup and backup_files(run_folder, (running, inscale, trs, inscale_min, inscale_lammin)):
+        log.info("%s: old plots moved to backup/", theory)
+    plot_running(run_folder / running, d["runs"], d["sm_run"], d["overlay_runs"] or None,
+                 title=f"{name}: running of λ")
+    scan, limits = d["scan"], d["limits"]
+    plot_instability(run_folder / inscale, scan, d["overlay"], title=f"{name}: instability scale",
+                     limits=limits)
+    plot_instability(run_folder / inscale_min, scan, title=f"{name}: instability scale and minimum of λ",
+                     limits=limits, minima="mu")
+    plot_instability(run_folder / inscale_lammin, scan,
+                     title=f"{name}: instability scale and metastability",
+                     limits=limits, minima="lam")
+    if d["samples"] is not None:
+        plot_traces(run_folder / trs, d["samples"], title=f"{name}: instability scale")
+
+
+_STORED = {"ScanResult": ScanResult, "SampleResult": SampleResult, "RunResult": RunResult}
+
+
+def _pack(x):
+    """Plot data as plain containers: the result dataclasses become {"__class__", fields}, so
+    that data stored by an older version still loads when fields are added (see _unpack)."""
+    if type(x).__name__ in _STORED and dataclasses.is_dataclass(x):
+        return {"__class__": type(x).__name__,
+                **{f.name: _pack(getattr(x, f.name)) for f in dataclasses.fields(x)}}
+    if isinstance(x, dict):
+        return {k: _pack(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_pack(v) for v in x]
+    return x
+
+
+def _unpack(x):
+    """Inverse of _pack: fields missing in old data take their defaults, unknown ones are dropped."""
+    if isinstance(x, dict) and x.get("__class__") in _STORED:
+        cls = _STORED[x["__class__"]]
+        names = {f.name for f in dataclasses.fields(cls)}
+        return cls(**{k: _unpack(v) for k, v in x.items() if k in names})
+    if isinstance(x, dict):
+        return {k: _unpack(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_unpack(v) for v in x]
+    return x
+
+
+def save_plot_data(path: Path, d: dict) -> None:
+    """Store plot_data() (pickle of plain containers and numpy arrays)."""
+    with open(path, "wb") as fh:
+        pickle.dump(_pack(d), fh)
+
+
+def load_plot_data(path: Path) -> dict:
+    """Read data stored by save_plot_data."""
+    with open(path, "rb") as fh:
+        return _unpack(pickle.load(fh))
+
+
+def replot(run_folder: Path, only: list[str] | None = None) -> list[str]:
+    """Redraw the plots of every theory in a results folder from their stored plot data,
+    without running anything (e.g. after changing the plot style). only: theory labels to
+    redraw. Returns the theories drawn; theories without stored data are skipped with a
+    warning (they were run before plot data was stored: run them once more)."""
+    drawn = []
+    for data in sorted(run_folder.glob(f"*/data/{PLOT_DATA}")):
+        theory = data.parent.parent.name
+        if only and theory not in only:
+            continue
+        draw_plots(run_folder, load_plot_data(data), backup=False)
+        log.info("%s: plots redrawn", theory)
+        drawn.append(theory)
+    for folder in sorted(p for p in run_folder.iterdir() if p.is_dir() and p.name != "backup"):
+        if not (folder / "data" / PLOT_DATA).exists() and (not only or folder.name in only):
+            log.warning("%s: no stored plot data (run it once with this version)", folder.name)
+    return drawn
 
 
 def _write_data(a: Analysis) -> None:
+    """data/: running_<k>.csv per example, running_SM.csv and scan.csv."""
     data = a.folder / "data"
     for k, r in enumerate(a.runs, 1):
         write_run_csv(data / f"running_{k}.csv", r)
     write_run_csv(data / "running_SM.csv", a.sm_run)
     write_scan_csv(data / "scan.csv", a.scan, a.overlay_scan)
+    save_plot_data(data / PLOT_DATA, plot_data(a))
+    write_boundaries_csv(data / "boundaries.csv", a.scan)
+    if a.samples is not None:
+        write_samples_csv(data / "trs_samples.csv", a.samples)
 
 
 def _write_betas(a: Analysis) -> None:
+    """betas/: LaTeX and JSON per beta source; with both sources also comparison.md/.json,
+    including the μ_I differences between native and PyR@TE running.
+    """
     betas = a.folder / "betas"
     for src, bs in a.systems.items():
         (betas / f"betas_{src}.tex").write_text(bs.latex(), encoding="utf-8")
@@ -213,6 +404,9 @@ def _write_betas(a: Analysis) -> None:
 
 
 def _write_model_json(a: Analysis) -> None:
+    """model.json: model, all settings, matching used, closure checks, warnings, conventions
+    and the SM μ_I, i.e. everything needed to reproduce the analysis.
+    """
     main = a.systems.get("native") or a.systems["pyrate"]
     write_json(a.folder / "model.json", {
         "created": datetime.now().isoformat(timespec="seconds"),
@@ -220,4 +414,5 @@ def _write_model_json(a: Analysis) -> None:
         "model": a.spec.model.as_dict(), **a.spec.record(), "threshold_matching": a.threshold_used,
         "closure": main.meta.get("closure"), "warnings": a.spec.model.check(),
         "conventions": cp.conventions(), "sm_mu_I_GeV": a.scan.sm_mu_I,
+        "sm_lam_min": a.scan.sm_lam_min, "sm_mu_min_GeV": a.scan.sm_mu_min,
     })

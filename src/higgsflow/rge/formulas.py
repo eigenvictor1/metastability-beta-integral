@@ -17,18 +17,29 @@ projects it onto the couplings.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from itertools import permutations
 
 import numpy as np
 
-from ..theory.couplings import QUARTIC
 from ..theory.model import Model
 from .polytensor import Poly, contract
 from .tensors import GAUGE_INDEX, NGI, build_tensors
 
+Term = Poly | Callable[[], Poly]     # a term of a beta function, or a function computing it
+
 
 class TwoLoopFormulas:
+    """The general formulas, evaluated on the explicit tensors of one model.
+
+    All tensors are Polys in the model's couplings: G (gauge couplings squared, diagonal),
+    T (fermion generators), Ts (scalar generators), y and yt (Yukawas and their conjugate
+    in the doubled basis), l (quartic). Helper invariants (Casimirs, Yukawa traces) are
+    built once in _helpers.
+    """
+
     def __init__(self, model: Model):
+        """Build the coupling tensors of model as Polys (see the class docstring)."""
         self.model = model
         self.names = model.coupling_names()
         nv = self.nv = len(self.names)
@@ -50,18 +61,27 @@ class TwoLoopFormulas:
         f = tens["f"]
         self.C2G = Poly.const(np.einsum("ACD,BCD->AB", f, f), nv)
 
-        y = Poly.zero((4, 2 * N, 2 * N), nv)
+        y = Poly.zero((tens["NS"], 2 * N, 2 * N), nv)
         for name, arr in tens["ybasis"].items():
             y = y + Poly.var(self.names.index(name), arr, nv)
         self.y = y
         self.yt = self.tilde(y, (1, 2))
-        self.l = Poly.var(self.names.index(QUARTIC), tens["L"], nv)
+        lq = Poly.zero(tens["L"].shape, nv)
+        for name, arr in tens["quartics"].items():
+            lq = lq + Poly.var(self.names.index(name), arr, nv)
+        self.l = lq
         self._helpers()
 
     def tilde(self, p: Poly, axes):
+        """Swap fermion ψ <-> ψ-bar blocks on the given axes (the 'tilded' tensors of Poole-Thomsen)."""
         return p.take(self.perm, axes)
 
     def _helpers(self):
+        """Precompute the group and Yukawa invariants used by the formulas.
+
+        S2F, S2S: Dynkin indices of fermions/scalars; C2F, C2S, C2G: Casimirs; Y2F, Y2S:
+        Yukawa traces; and the products of these that appear at two loops.
+        """
         c = contract
         G, T, Ts, y, yt = self.G, self.T, self.Ts, self.y, self.yt
         self.S2F = c("Aij,Bji->AB", T, T)
@@ -99,117 +119,125 @@ class TwoLoopFormulas:
 
     # -- gauge ------------------------------------------------------------
     def gauge(self, loop):
+        """Gauge beta tensor β_AB at the given loop (projected onto g1, g2, g3 by the engine)."""
         c, G = contract, self.G
         if loop == 1:
             return self.C2G * (-22 / 3) + self.S2F * (2 / 3) + self.S2S * (1 / 3)
-        terms: list[tuple[float, Poly]] = [
+        terms: list[tuple[float, Term]] = [
             (2, self.S2FCF), (4, self.S2SCS),
-            (-68 / 3, c("AC,CD,DB->AB", self.C2G, G, self.C2G)),
-            (10 / 3, c("AC,CD,DB->AB", self.C2G, G, self.S2F)),
-            (2 / 3, c("AC,CD,DB->AB", self.C2G, G, self.S2S)),
+            (-68 / 3, lambda: c("AC,CD,DB->AB", self.C2G, G, self.C2G)),
+            (10 / 3, lambda: c("AC,CD,DB->AB", self.C2G, G, self.S2F)),
+            (2 / 3, lambda: c("AC,CD,DB->AB", self.C2G, G, self.S2S)),
             (-1, self.S2FYF)
         ]
         return _lin(terms)
 
     # -- Yukawa -----------------------------------------------------------
     def yukawa(self, loop):
+        """Yukawa beta tensor β^a_ij at the given loop, symmetrised in the fermion indices."""
         c = contract
         y, yt, G, T = self.y, self.yt, self.G, self.T
         C2S, C2F = self.C2S, self.C2F
         if loop == 1:
-            terms: list[tuple[float, Poly]] = [
-                (-6, c("aik,kj->aij", y, C2F)),
-                (2, c("bik,akl,blj->aij", y, yt, y)),
-                (1, c("aik,kj->aij", y, self.Y2Ft)),
-                (0.5, c("ba,bij->aij", self.Y2S, y))
+            terms: list[tuple[float, Term]] = [
+                (-6, lambda: c("aik,kj->aij", y, C2F)),
+                (2, lambda: c("bik,akl,blj->aij", y, yt, y)),
+                (1, lambda: c("aik,kj->aij", y, self.Y2Ft)),
+                (0.5, lambda: c("ba,bij->aij", self.Y2S, y))
             ]
         else:
             terms = [
-                (-21 / 2, c("ba,cb,cij->aij", C2S, C2S, y)),
-                (12, c("ba,bik,kj->aij", C2S, y, C2F)),
-                (-3, c("aik,kl,lj->aij", y, C2F, C2F)),
-                (49 / 4, c("ba,bij->aij", self.C2SG, y)),
-                (-1 / 4, c("ba,bij->aij", self.C2SS, y)),
-                (-1 / 2, c("ba,bij->aij", self.C2SF, y)),
-                (-97 / 3, c("aik,kj->aij", y, self.C2FG)),
-                (11 / 6, c("aik,kj->aij", y, self.C2FS)),
-                (5 / 3, c("aik,kj->aij", y, self.C2FF)),
-                (1 / 12, c("bij,cdea,bcde->aij", y, self.l, self.l)),
-                (12, c("bik,Akl,AB,blm,Bnj,amn->aij", y, T, G, yt, T, y)),
-                (6, c("bik,akl,bc,clj->aij", y, yt, C2S, y)),
-                (-12, c("ca,bik,ckl,blj->aij", C2S, y, yt, y)),
-                (10, c("bik,kl,alm,bmj->aij", y, C2F, yt, y)),
-                (6, c("bik,akl,blm,mj->aij", y, yt, y, C2F)),
-                (5 / 2, c("ba,bij->aij", self.Y2SCF, y)),
-                (9, c("ik,akj->aij", self.Y2FCS, y)),
-                (-1 / 2, c("ik,akj->aij", self.Y2FCF, y)),
-                (-7 / 2, c("aik,kl,lj->aij", y, self.Y2Ft, C2F)),
-                (-2, c("bcda,bik,ckl,dlj->aij", self.l, y, yt, y)),
-                (2, c("bik,ckl,alm,bmn,cnj->aij", y, yt, y, yt, y)),
-                (-2, c("bik,ckl,alm,cmn,bnj->aij", y, yt, y, yt, y)),
-                (-1 / 2, c("ba,bij->aij", self.Y4S, y)),
-                (-2, c("bik,akl,lm,bmj->aij", y, yt, self.Y2F, y)),
-                (-1 / 4, c("aik,kj->aij", y, self.Y2FYFt)),
-                (-3 / 4, c("ba,bij->aij", self.Y2SYF, y)),
-                (-1, c("bik,bc,akl,clj->aij", y, self.Y2S, yt, y)),
-                (-3 / 4, c("ik,akj->aij", self.Y2FYS, y)),
+                (-21 / 2, lambda: c("ba,cb,cij->aij", C2S, C2S, y)),
+                (12, lambda: c("ba,bik,kj->aij", C2S, y, C2F)),
+                (-3, lambda: c("aik,kl,lj->aij", y, C2F, C2F)),
+                (49 / 4, lambda: c("ba,bij->aij", self.C2SG, y)),
+                (-1 / 4, lambda: c("ba,bij->aij", self.C2SS, y)),
+                (-1 / 2, lambda: c("ba,bij->aij", self.C2SF, y)),
+                (-97 / 3, lambda: c("aik,kj->aij", y, self.C2FG)),
+                (11 / 6, lambda: c("aik,kj->aij", y, self.C2FS)),
+                (5 / 3, lambda: c("aik,kj->aij", y, self.C2FF)),
+                (1 / 12, lambda: c("bij,cdea,bcde->aij", y, self.l, self.l)),
+                # contracted in steps that keep at most three fermion-space indices
+                # (the one-shot contraction builds a 4-index intermediate per monomial)
+                (12, lambda: c("iBm,Bnj,amn->aij",
+                               c("iAm,AB->iBm", c("bik,Akl,blm->iAm", y, T, yt), G), T, y)),
+                (6, lambda: c("bik,akl,bc,clj->aij", y, yt, C2S, y)),
+                (-12, lambda: c("ca,bik,ckl,blj->aij", C2S, y, yt, y)),
+                (10, lambda: c("bik,kl,alm,bmj->aij", y, C2F, yt, y)),
+                (6, lambda: c("bik,akl,blm,mj->aij", y, yt, y, C2F)),
+                (5 / 2, lambda: c("ba,bij->aij", self.Y2SCF, y)),
+                (9, lambda: c("ik,akj->aij", self.Y2FCS, y)),
+                (-1 / 2, lambda: c("ik,akj->aij", self.Y2FCF, y)),
+                (-7 / 2, lambda: c("aik,kl,lj->aij", y, self.Y2Ft, C2F)),
+                (-2, lambda: c("bcda,bik,ckl,dlj->aij", self.l, y, yt, y)),
+                (2, lambda: c("bik,ckl,alm,bmn,cnj->aij", y, yt, y, yt, y)),
+                (-2, lambda: c("bik,ckl,alm,cmn,bnj->aij", y, yt, y, yt, y)),
+                (-1 / 2, lambda: c("ba,bij->aij", self.Y4S, y)),
+                (-2, lambda: c("bik,akl,lm,bmj->aij", y, yt, self.Y2F, y)),
+                (-1 / 4, lambda: c("aik,kj->aij", y, self.Y2FYFt)),
+                (-3 / 4, lambda: c("ba,bij->aij", self.Y2SYF, y)),
+                (-1, lambda: c("bik,bc,akl,clj->aij", y, self.Y2S, yt, y)),
+                (-3 / 4, lambda: c("ik,akj->aij", self.Y2FYS, y)),
             ]
         B = _lin(terms)
         return (B + B.transpose(0, 2, 1)) * 0.5
 
     # -- quartic ----------------------------------------------------------
     def quartic(self, loop):
+        """Quartic beta tensor β_abcd at the given loop, symmetrised over the four scalar indices."""
         c = contract
         G, Ts, l, y, yt = self.G, self.Ts, self.l, self.y, self.yt
         C2S = self.C2S
         if loop == 1:
-            terms: list[tuple[float, Poly]] = [
-                (36, c("AB,CD,Aae,Ceb,Bcf,Dfd->abcd", G, G, Ts, Ts, Ts, Ts)),
-                (-12, c("ae,ebcd->abcd", C2S, l)),
-                (3, c("abef,efcd->abcd", l, l)),
-                (2, c("ae,ebcd->abcd", self.Y2S, l)),
-                (-12, c("aij,bjk,ckl,dli->abcd", y, yt, y, yt))
+            terms: list[tuple[float, Term]] = [
+                (36, lambda: c("AB,CD,Aae,Ceb,Bcf,Dfd->abcd", G, G, Ts, Ts, Ts, Ts)),
+                (-12, lambda: c("ae,ebcd->abcd", C2S, l)),
+                (3, lambda: c("abef,efcd->abcd", l, l)),
+                (2, lambda: c("ae,ebcd->abcd", self.Y2S, l)),
+                (-12, lambda: c("aij,bjk,ckl,dli->abcd", y, yt, y, yt))
             ]
         else:
-            GGG = c("AB,CD,EF->ABCDEF", G, G, G)
             th2 = c("Aai,Cib->ACab", Ts, Ts)  # (θ^A θ^C)_ab
             th4 = c("Aai,Cij,Ejk,Bkb->ACEBab", Ts, Ts, Ts, Ts)
             GG = c("AB,CD->ABCD", G, G)
 
             def Gx(X):
+                """G X G, the gauge-coupling-weighted form of the group invariant X."""
                 return c("CE,EF,FD->CD", G, X, G)
 
             terms = [
-                (324, c("ABCDEF,ACEBab,DFcd->abcd", GGG, th4, th2)),
-                (-684, c("ai,ACib,ABCD,BDcd->abcd", C2S, th2, GG, th2)),
-                (646, c("ACab,AB,CD,BDcd->abcd", th2, G, Gx(self.C2G), th2)),
-                (-28, c("ACab,AB,CD,BDcd->abcd", th2, G, Gx(self.S2S), th2)),
-                (-32, c("ACab,AB,CD,BDcd->abcd", th2, G, Gx(self.S2F), th2)),
-                (12, c("ACae,ABCD,BDbf,efcd->abcd", th2, GG, th2, l)),
-                (60, c("ACab,ABCD,BDef,efcd->abcd", th2, GG, th2, l)),
-                (6, c("ae,ef,fbcd->abcd", C2S, C2S, l)),
-                (-143 / 3, c("ae,ebcd->abcd", self.C2SG, l)),
-                (11 / 3, c("ae,ebcd->abcd", self.C2SS, l)),
-                (10 / 3, c("ae,ebcd->abcd", self.C2SF, l)),
-                (-18, c("Aae,Bbf,AB,efgh,ghcd->abcd", Ts, Ts, G, l, l)),
-                (24, c("abef,fg,egcd->abcd", l, C2S, l)),
-                (-18, c("ae,ebfg,fgcd->abcd", C2S, l, l)),
-                (1 / 3, c("aefg,efgh,hbcd->abcd", l, l, l)),
-                (-6, c("abef,eghc,fghd->abcd", l, l, l)),
+                # G_AB G_CD G_EF θ4_ACEBab θ2_DFcd, without building the 12^6 tensor G⊗G⊗G
+                (324, lambda: c("CEab,CEcd->abcd", c("AB,ACEBab->CEab", G, th4),
+                                c("CD,EF,DFcd->CEcd", G, G, th2))),
+                (-684, lambda: c("ai,ACib,ABCD,BDcd->abcd", C2S, th2, GG, th2)),
+                (646, lambda: c("ACab,AB,CD,BDcd->abcd", th2, G, Gx(self.C2G), th2)),
+                (-28, lambda: c("ACab,AB,CD,BDcd->abcd", th2, G, Gx(self.S2S), th2)),
+                (-32, lambda: c("ACab,AB,CD,BDcd->abcd", th2, G, Gx(self.S2F), th2)),
+                (12, lambda: c("ACae,ABCD,BDbf,efcd->abcd", th2, GG, th2, l)),
+                (60, lambda: c("ACab,ABCD,BDef,efcd->abcd", th2, GG, th2, l)),
+                (6, lambda: c("ae,ef,fbcd->abcd", C2S, C2S, l)),
+                (-143 / 3, lambda: c("ae,ebcd->abcd", self.C2SG, l)),
+                (11 / 3, lambda: c("ae,ebcd->abcd", self.C2SS, l)),
+                (10 / 3, lambda: c("ae,ebcd->abcd", self.C2SF, l)),
+                (-18, lambda: c("Aae,Bbf,AB,efgh,ghcd->abcd", Ts, Ts, G, l, l)),
+                (24, lambda: c("abef,fg,egcd->abcd", l, C2S, l)),
+                (-18, lambda: c("ae,ebfg,fgcd->abcd", C2S, l, l)),
+                (1 / 3, lambda: c("aefg,efgh,hbcd->abcd", l, l, l)),
+                (-6, lambda: c("abef,eghc,fghd->abcd", l, l, l)),
                 # PyR@TE writes T T here; with our index convention the covariant
                 # (gauge-invariant) contraction needs the tilded generators.
-                (-144, c("ACab,ABCD,Dij,Bjk,ckl,dli->abcd", th2, GG, self.Tt, self.Tt, y, yt)),
-                (60, c("ae,ACeb,ABCD,BDcd->abcd", self.Y2S, th2, GG, th2)),
-                (10, c("ae,ebcd->abcd", self.Y2SCF, l)),
-                (-3, c("abef,fg,egcd->abcd", l, self.Y2S, l)),
-                (24, c("ae,eij,bjk,ckl,dli->abcd", C2S, y, yt, y, yt)),
-                (-48, c("aij,bjk,ckl,dlm,mi->abcd", y, yt, y, yt, self.C2F)),
-                (12, c("aij,ejk,bkl,fli,efcd->abcd", y, yt, y, yt, l)),
-                (-2, c("ae,ebcd->abcd", self.Y4S, l)),
-                (-3, c("ae,ebcd->abcd", self.Y2SYF, l)),
-                (48, c("aij,bjk,ckl,elm,dmn,eni->abcd", y, yt, y, yt, y, yt)),
-                (24, c("aij,bjk,ekl,clm,dmn,eni->abcd", y, yt, y, yt, y, yt)),
-                (24, c("aij,bjk,ckl,dlm,mi->abcd", y, yt, y, yt, self.Y2F)),
+                (-144, lambda: c("ACab,ABCD,Dij,Bjk,ckl,dli->abcd", th2, GG, self.Tt, self.Tt, y, yt)),
+                (60, lambda: c("ae,ACeb,ABCD,BDcd->abcd", self.Y2S, th2, GG, th2)),
+                (10, lambda: c("ae,ebcd->abcd", self.Y2SCF, l)),
+                (-3, lambda: c("abef,fg,egcd->abcd", l, self.Y2S, l)),
+                (24, lambda: c("ae,eij,bjk,ckl,dli->abcd", C2S, y, yt, y, yt)),
+                (-48, lambda: c("aij,bjk,ckl,dlm,mi->abcd", y, yt, y, yt, self.C2F)),
+                (12, lambda: c("aij,ejk,bkl,fli,efcd->abcd", y, yt, y, yt, l)),
+                (-2, lambda: c("ae,ebcd->abcd", self.Y4S, l)),
+                (-3, lambda: c("ae,ebcd->abcd", self.Y2SYF, l)),
+                (48, lambda: c("aij,bjk,ckl,elm,dmn,eni->abcd", y, yt, y, yt, y, yt)),
+                (24, lambda: c("aij,bjk,ekl,clm,dmn,eni->abcd", y, yt, y, yt, y, yt)),
+                (24, lambda: c("aij,bjk,ckl,dlm,mi->abcd", y, yt, y, yt, self.Y2F)),
             ]
         B = _lin(terms)
         perms = list(permutations(range(4)))
@@ -219,13 +247,21 @@ class TwoLoopFormulas:
         return out * (1 / 24)
 
 
-def _lin(terms: list[tuple[float, Poly]]) -> Poly:
-    """Linear combination sum(coef * term) of polynomial tensors."""
+def _lin(terms: list[tuple[float, Term]]) -> Poly:
+    """Linear combination sum(coef * term) of polynomial tensors, accumulated in place.
+
+    A term may be a Poly or a function returning one: such terms are evaluated one at a
+    time and added to the sum at once, so only one term is in memory besides the sum.
+    """
     out: Poly | None = None
     for coef, p in terms:
         if coef == 0:
             continue
-        q = p * coef
-        out = q if out is None else out + q
+        q = (p() if callable(p) else p) * coef      # new arrays: safe to add into
+        if out is None:
+            out = q
+        else:
+            out.iadd(q)
+        del q
     assert out is not None, "empty linear combination"
-    return out
+    return out.prune()

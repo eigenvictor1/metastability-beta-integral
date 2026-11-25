@@ -7,9 +7,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from fractions import Fraction
+from typing import TYPE_CHECKING
 
 import numpy as np
-import sympy as sp
+
+if TYPE_CHECKING:
+    import sympy as sp
 
 from ..theory.couplings import get as get_coupling
 
@@ -30,9 +33,13 @@ class BetaSystem:
 
     # -- sympy views --------------------------------------------------------
     def symbols(self):
+        """sympy symbols of the couplings (λ is called lambda)."""
+        import sympy as sp
         return [sp.Symbol(_sym_name(c), real=True) for c in self.couplings]
 
     def expr(self, c: str, loop: int, exact=True) -> sp.Expr:
+        """β^(loop) of coupling c as a sympy expression (coefficients as exact fractions if possible)."""
+        import sympy as sp
         syms = self.symbols()
         e = 0
         for mono, v in self.coeffs[c].get(loop, {}).items():
@@ -57,6 +64,7 @@ class BetaSystem:
                         np.array(vals)))
 
         def f(t, x):
+            """dx/d ln μ: Σ over monomials of coefficient x Π x_i^power, for each coupling."""
             x = np.asarray(x, dtype=float)
             out = np.empty(len(idx))
             for k, (M, V) in enumerate(idx):
@@ -85,17 +93,21 @@ class BetaSystem:
         return BetaSystem(list(couplings), new, self.source, dict(self.meta))
 
     def to_json(self) -> dict:
+        """JSON-serialisable form (monomials as lists)."""
         return {"couplings": self.couplings, "source": self.source, "meta": self.meta,
                 "coeffs": {c: {str(L): [[list(m), v] for m, v in d.items()]
                                for L, d in Ls.items()} for c, Ls in self.coeffs.items()}}
 
     @classmethod
     def from_json(cls, d: dict) -> BetaSystem:
+        """Inverse of to_json."""
         co = {c: {int(L): {tuple(m): v for m, v in lst} for L, lst in Ls.items()}
               for c, Ls in d["coeffs"].items()}
         return cls(d["couplings"], co, d["source"], d.get("meta", {}))
 
     def latex(self) -> str:
+        """A standalone LaTeX document with all beta functions."""
+        import sympy as sp
         syms = self.symbols()
         lines = [r"\documentclass{article}", r"\usepackage{amsmath,breqn}",
                  r"\begin{document}",
@@ -112,6 +124,7 @@ class BetaSystem:
 
 
 def _sym_name(c: str) -> str:
+    """sympy name of a coupling (from the registry; unknown names unchanged)."""
     try:
         return get_coupling(c).symbol
     except KeyError:
@@ -119,6 +132,8 @@ def _sym_name(c: str) -> str:
 
 
 def to_rational(v: float, max_den=10 ** 6):
+    """Float -> exact sympy Rational if a fraction with denominator <= max_den matches it, else Float."""
+    import sympy as sp
     fr = Fraction(v).limit_denominator(max_den)
     if abs(float(fr) - v) <= 1e-9 * max(1.0, abs(v)):
         return sp.Rational(fr.numerator, fr.denominator)

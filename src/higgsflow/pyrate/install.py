@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 
 
 class PyRATEUnavailable(RuntimeError):
+    """PyR@TE is not installed where higgsflow looks for it."""
     pass
 
 
@@ -38,8 +39,10 @@ def find_pyrate(pyrate_dir=None) -> Path:
 
 
 def _git_install(target: Path):
+    """Fetch exactly the pinned commit with git (shallow)."""
     log.info("cloning PyR@TE at %s", PINNED_COMMIT[:8])
     def run(*args):
+        """Run a git command in the target folder (raises on failure)."""
         subprocess.run(["git", *args], cwd=target, check=True, capture_output=True, text=True)
 
     target.mkdir()
@@ -50,6 +53,7 @@ def _git_install(target: Path):
 
 
 def _zip_install(target: Path):
+    """Download the pinned commit as a zip from GitHub (when git is not available)."""
     log.info("downloading PyR@TE %s", PINNED_COMMIT[:8])
     with urllib.request.urlopen(URL, timeout=120) as r:
         data = r.read()
@@ -64,9 +68,14 @@ def _zip_install(target: Path):
 
 
 def install_pyrate(target: Path | None = None, force: bool = False) -> Path:
+    """Install the pinned PyR@TE into target (default ~/.higgsflow/pyrate); returns the path.
+
+    Skips if already installed (unless force). Empties PyR@TE's EndCommands setting so it
+    does not try to run pdflatex after each run.
+    """
     target = Path(target or paths.pyrate_dir())
     if (target / "pyR@TE.py").exists() and not force:
-        log.info("PyR@TE already installed at %s", target)
+        log.info("PyR@TE already installed at %s", paths.short(target))
         return target
     if target.exists():
         shutil.rmtree(target)
@@ -81,5 +90,5 @@ def install_pyrate(target: Path | None = None, force: bool = False) -> Path:
     settings.write_text("\n".join('EndCommands : ""' if l.startswith("EndCommands") else l
                                   for l in lines) + "\n")
     (target / "INSTALLED_COMMIT").write_text(PINNED_COMMIT + "\n")
-    log.info("PyR@TE installed at %s", target)
+    log.info("PyR@TE installed at %s", paths.short(target))
     return target

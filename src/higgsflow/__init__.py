@@ -10,15 +10,33 @@ output   results folder layout and plots
 """
 __version__ = "0.2.0"
 
-from .config import RunSpec
-from .pipeline import Analysis, run_analysis
-from .rge.engine import compute_betas
-from .rge.system import BetaSystem
-from .running.boundary import M_PLANCK, SMInputs
-from .running.solver import Runner
-from .study import run_study, study_from_models
-from .theory.fields import WeylFermion
-from .theory.model import Model
+from importlib import import_module
+
+# Lazy exports: importing a submodule (e.g. in a scan worker process) does not load
+# the whole package (pipeline, plotting, sympy), which keeps worker start-up fast.
+_EXPORTS = {
+    "RunSpec": ".config",
+    "Analysis": ".pipeline",
+    "run_analysis": ".pipeline",
+    "compute_betas": ".rge.engine",
+    "BetaSystem": ".rge.system",
+    "M_PLANCK": ".running.boundary",
+    "SMInputs": ".running.boundary",
+    "Runner": ".running.solver",
+    "run_study": ".study",
+    "study_from_models": ".study",
+    "WeylFermion": ".theory.fields",
+    "Model": ".theory.model",
+}
+
+
+def __getattr__(name):
+    if name in _EXPORTS:
+        value = getattr(import_module(_EXPORTS[name], __name__), name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "M_PLANCK",

@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from ..paths import cache_dir as default_cache_dir
-from ..theory.couplings import GAUGE, QUARTIC
+from ..theory.couplings import GAUGE
 from ..theory.model import Model
 from .formulas import TwoLoopFormulas
 from .system import BetaSystem
@@ -55,13 +55,15 @@ def compute_betas(model: Model, loops: int = 2, cache_dir: str | os.PathLike | N
     coeffs: dict[str, dict[int, Coeffs]] = {c: {} for c in eng.names}
     closure = {}
     for L in range(1, loops + 1):
-        log.info("native betas: %d-loop", L)
+        log.debug("native betas: %d-loop", L)
         for gname, d in _project_gauge(eng.gauge(L)).items():
             coeffs[gname][L] = d
         yuk, ry = _project_yukawas(eng.yukawa(L), eng.tens["ybasis"])
         for name, d in yuk.items():
             coeffs[name][L] = d
-        coeffs[QUARTIC][L], rl = _project_quartic(eng.quartic(L), eng.tens["L"])
+        quart, rl = _project_quartic(eng.quartic(L), eng.tens["quartics"])
+        for name, d in quart.items():
+            coeffs[name][L] = d
         closure[L] = {"yukawa_residual": ry, "quartic_residual": rl}
 
     bs = BetaSystem(eng.names, coeffs, "native",
@@ -106,18 +108,28 @@ def _project_yukawas(By, ybasis: dict[str, np.ndarray]) -> tuple[dict[str, Coeff
     return out, max([float(np.abs(a).max()) for a in res.values()] + [0.0])
 
 
-def _project_quartic(Bl, Lb: np.ndarray) -> tuple[Coeffs, float]:
-    """Projection of the quartic beta tensor onto the λ tensor; max residual."""
-    nb = np.vdot(Lb, Lb).real
-    d: Coeffs = {}
-    rl = 0.0
-    for m, arr in Bl.terms.items():
-        v = (np.vdot(Lb, arr) / nb).real
-        if abs(v) > 1e-11:
-            d[m] = v
-        rl = max(rl, float(np.abs(arr - v * Lb).max()))
-    return d, rl
+def _project_quartic(Bl, bases: dict[str, np.ndarray]) -> tuple[dict[str, Coeffs], float]:
+    """Projection of the quartic beta tensor onto each quartic coupling tensor (λ, and λ_S, κ
+    with a singlet: disjoint supports, hence orthogonal); max residual."""
+    res = {m: arr.copy() for m, arr in Bl.terms.items()}
+    out: dict[str, Coeffs] = {}
+    for name, Lb in bases.items():
+        nb = np.vdot(Lb, Lb).real
+        d: Coeffs = {}
+        for m, arr in Bl.terms.items():
+            v = (np.vdot(Lb, arr) / nb).real
+            if abs(v) > 1e-11:
+                d[m] = v
+                res[m] = res[m] - v * Lb
+        out[name] = d
+    return out, max([float(np.abs(a).max()) for a in res.values()] + [0.0])
+
+
+def is_cached(model: Model, cache_dir: str | os.PathLike | None = None) -> bool:
+    """True if the native betas of model are already in the disk cache."""
+    return _cache_path(model, cache_dir).exists()
 
 
 def _cache_path(model: Model, cache_dir: str | os.PathLike | None) -> Path:
+    """Cache file of the native betas of a model (keyed by the model hash)."""
     return Path(cache_dir or default_cache_dir()) / f"native_{model.hash()}.json"

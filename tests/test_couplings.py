@@ -17,9 +17,11 @@ def test_sm_registry():
 
 def test_new_yukawa_and_order():
     name = cp.new_yukawa_name("L", "N", True)
-    assert name == "y_L_N_c"
+    assert name == "yLNc"
+    assert cp.new_yukawa_name("N_1", "L_3", False) == "yN1L3"
     c = cp.get(name)
-    assert c.kind == "yukawa" and not c.sm and cp.latex(name) == "$y_{L,N,c}$"
+    assert c.kind == "yukawa" and not c.sm and cp.latex(name) == r"$y_{\mathrm{LNc}}$"
+    assert not cp.is_new_yukawa("y") and not cp.is_new_yukawa("yt")
     assert cp.ordered(["yt", name]) == ["g1", "g2", "g3", "yt", name, "lam"]
 
 

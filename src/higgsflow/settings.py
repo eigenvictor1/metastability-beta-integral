@@ -12,14 +12,17 @@ from .running.boundary import M_PLANCK
 
 @dataclass(frozen=True)
 class Numerics:
+    """Integration settings of the RG running (per model, JSON key 'numerics')."""
     rtol: float = 1e-9                 # solve_ivp (DOP853) relative tolerance
     atol: float = 1e-11                # solve_ivp absolute tolerance
     n_points: int = 2000               # output grid points between M_t and mu_max
     mu_max: float = M_PLANCK           # upper end of the running (GeV)
     max_rhs_calls: int = 200_000       # a run needing more beta evaluations is 'failed'
+    boundary_steps: int = 8            # bisection steps locating region boundaries in scans (0 = off)
 
     @classmethod
     def from_dict(cls, d: dict | None) -> Numerics:
+        """Numerics from a JSON dict; unknown keys are an error, missing keys take the defaults."""
         d = d or {}
         known = {f.name for f in fields(cls)}
         unknown = set(d) - known
@@ -28,6 +31,7 @@ class Numerics:
         return cls(**{k: type(getattr(cls, k))(v) for k, v in d.items()})
 
     def as_dict(self) -> dict[str, float]:
+        """The settings as a dict (for model.json)."""
         return asdict(self)
 
 

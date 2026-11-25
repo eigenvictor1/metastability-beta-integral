@@ -19,12 +19,14 @@ M_PLANCK = 1.22e19  # GeV
 
 @dataclass
 class SMInputs:
+    """Measured SM inputs (pole masses, α_s); they fix the couplings at μ = M_t."""
     Mt: float = 172.57       # GeV, top pole mass
     Mh: float = 125.20       # GeV, Higgs pole mass
     alpha_s: float = 0.1180  # α_s(M_Z)
     MW: float = 80.3692      # GeV
 
     def couplings_at_mt(self) -> dict[str, float]:
+        """MS-bar g1, g2, g3, y_t, λ at μ = M_t from the Buttazzo et al. NNLO fits."""
         dt = self.Mt - 173.34
         dh = self.Mh - 125.15
         das = (self.alpha_s - 0.1184) / 0.0007
@@ -38,4 +40,5 @@ class SMInputs:
         }
 
     def as_dict(self):
+        """The inputs as a dict (for model.json)."""
         return asdict(self)

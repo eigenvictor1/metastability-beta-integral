@@ -11,10 +11,12 @@ from fractions import Fraction
 
 from . import group_theory as gt
 
-_COMPACT = re.compile(r"(?:([A-Za-z][A-Za-z0-9]*):)?(?:(\d+)x)?\(([^,]+),(\d+),([-+]?[\d/.]+)\)")
+_COMPACT = re.compile(r"(?:([A-Za-z][A-Za-z0-9]*):)?(?:(\d+)x)?\(([^,]+),(\d+),([-+]?[\d/.]+)\)"
+                      r"(?:@([0-9.]+(?:[eE][-+]?\d+)?))?")
 
 
 def _frac(x: Fraction | float | int | str) -> Fraction:
+    """Hypercharge as an exact Fraction (floats are rounded to denominator <= 1000)."""
     if isinstance(x, Fraction):
         return x
     if isinstance(x, float):
@@ -35,28 +37,41 @@ class WeylFermion:
     Y: Fraction = Fraction(0)
     copies: int = 1
     sm: bool = False
+    mass: float | None = None     # fixed decoupling mass (GeV); None: decouples at the scanned M
 
     def __post_init__(self) -> None:
+        """Normalise su3/su2/Y given as strings or numbers, and check the name."""
         self.su3 = gt.parse_su3(self.su3)
         self.su2 = gt.parse_su2(self.su2)
         self.Y = _frac(self.Y)
+        if self.mass is not None:
+            self.mass = float(self.mass)
+            if not self.mass > 0:
+                raise ValueError(f"Field {self.name}: the mass must be positive, not {self.mass}")
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", self.name):
             raise ValueError(f"Field name {self.name!r} must be alphanumeric, starting with a letter.")
 
     @property
     def dim(self) -> int:
+        """Dimension of the multiplet (colour x isospin), per copy."""
         return gt.su3_dim(self.su3) * self.su2
 
     def label(self) -> str:
+        """File-system-safe label, e.g. '(3,2,1_6)'."""
         y = self.Y
         ys = str(y.numerator) if y.denominator == 1 else f"{y.numerator}_{y.denominator}"
         return f"({gt.su3_label(self.su3)},{self.su2},{ys})"
 
+    def rep(self) -> str:
+        """Representation for display, e.g. '(3,2,1/6)'."""
+        return f"({gt.su3_label(self.su3)},{self.su2},{self.Y})"
+
     @classmethod
     def from_spec(cls, spec: str | dict, default_name: str) -> WeylFermion:
-        """Build from a dict {name, su3, su2, Y, copies} or a compact string.
+        """Build from a dict {name, su3, su2, Y, copies, mass} or a compact string.
 
-        Compact strings: "(3,2,1/6)", "2x(1,1,0)", "N:(1,1,0)", "Q4:2x(3b,1,-2/3)".
+        Compact strings: "(3,2,1/6)", "2x(1,1,0)", "N:(1,1,0)", "Q4:2x(3b,1,-2/3)",
+        "X5:(1,5,0)@9.6e3" (fixed mass in GeV: the field decouples there, not at the scanned M).
         SU(3) may be a name ("1", "3", "3b", "8", "6b", ...) or Dynkin labels "p-q".
         """
         if isinstance(spec, dict):
@@ -64,16 +79,21 @@ class WeylFermion:
             d.setdefault("name", default_name)
             if isinstance(d.get("su3"), list):
                 d["su3"] = tuple(d["su3"])
-            return cls(**{k: d[k] for k in ("name", "su3", "su2", "Y", "copies") if k in d})
+            return cls(**{k: d[k] for k in ("name", "su3", "su2", "Y", "copies", "mass") if k in d})
         m = _COMPACT.fullmatch(str(spec).replace(" ", ""))
         if not m:
             raise ValueError(f"Cannot parse field {spec!r}; expected e.g. '(3,2,1/6)' or 'N:2x(1,1,0)'")
-        name, copies, su3, su2, y = m.groups()
-        return cls(name or default_name, gt.parse_su3(su3), int(su2), _frac(y), int(copies or 1))
+        name, copies, su3, su2, y, mass = m.groups()
+        return cls(name or default_name, gt.parse_su3(su3), int(su2), _frac(y), int(copies or 1),
+                   mass=float(mass) if mass else None)
 
     def as_dict(self) -> dict:
-        return {"name": self.name, "su3": list(self.su3), "su2": self.su2,
-                "Y": str(self.Y), "copies": self.copies}
+        """JSON form (inverse of from_spec with a dict)."""
+        d = {"name": self.name, "su3": list(self.su3), "su2": self.su2,
+             "Y": str(self.Y), "copies": self.copies}
+        if self.mass is not None:
+            d["mass"] = self.mass
+        return d
 
 
 @dataclass

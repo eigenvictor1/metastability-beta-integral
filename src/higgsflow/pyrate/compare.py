@@ -22,6 +22,7 @@ from ..theory.couplings import GAUGE, QUARTIC
 
 @dataclass
 class Mismatch:
+    """One coefficient where native and (mapped) PyR@TE betas differ."""
     coupling: str
     loop: int
     monomial: str
@@ -31,6 +32,7 @@ class Mismatch:
 
 @dataclass
 class ComparisonReport:
+    """Result of compare(): normalisation map, per-coupling table, mismatches, numeric check."""
     couplings: list[str]
     calibration: dict[str, float]
     calibrated_terms: list[str]
@@ -42,9 +44,11 @@ class ComparisonReport:
 
     @property
     def agree(self) -> bool:
+        """True if no coefficient differs and the numeric check is within 1e-6."""
         return not self.mismatches and self.numeric_max_rel < 1e-6
 
     def to_markdown(self) -> str:
+        """The report as Markdown (written to betas/comparison.md)."""
         L = ["# Native vs PyR@TE beta functions", "",
              f"**Overall agreement:** {'YES' if self.agree else 'NO'}", ""]
         L.append("## Yukawa normalisation map (y_native = k * y_pyrate)")
@@ -76,6 +80,7 @@ class ComparisonReport:
 
 
 def _mono_str(m, names):
+    """Readable form of a monomial, e.g. 'g1^2*yt'."""
     s = "*".join(f"{n}^{k}" if k > 1 else n for n, k in zip(names, m) if k)
     return s or "1"
 
@@ -98,6 +103,10 @@ def map_conventions(native: BetaSystem, pyrate: BetaSystem):
             absk[c] = 1.0
 
     def rescale(signs):
+        """PyR@TE system in native normalisation for one choice of Yukawa signs.
+
+        With y_native = k y_pyrate, β_c scales as k_c and each monomial by Π k^(-power).
+        """
         k = {c: absk[c] * s for c, s in zip(yuks, signs)}
         kv = np.array([k.get(c, 1.0) for c in names])
         new: dict[str, dict] = {}
@@ -122,6 +131,7 @@ def map_conventions(native: BetaSystem, pyrate: BetaSystem):
 
 
 def _diff_score(a: BetaSystem, b: BetaSystem) -> float:
+    """Sum of |coefficient differences| between two systems (used to choose the Yukawa signs)."""
     s = 0.0
     for c in a.couplings:
         for L in set(a.coeffs[c]) | set(b.coeffs[c]):
@@ -132,6 +142,11 @@ def _diff_score(a: BetaSystem, b: BetaSystem) -> float:
 
 
 def compare(native: BetaSystem, pyrate: BetaSystem, tol: float = 1e-8, seed: int = 0) -> ComparisonReport:
+    """Compare native and PyR@TE betas after the normalisation map.
+
+    Symbolic: every coefficient, per coupling and loop (relative tolerance tol).
+    Numeric: both beta vectors at 50 random coupling points.
+    """
     names = native.couplings
     k, calibrated, mapped = map_conventions(native, pyrate)
     table, mism = {}, []

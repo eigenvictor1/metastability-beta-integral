@@ -49,6 +49,7 @@ def _atomic_write(path: Path, text: str):
 # --------------------------------------------------------------------------
 
 def _qnb(f) -> str:
+    """PyR@TE quantum-number string of a field, e.g. '{U1Y: 1/6, SU2L: [1], SU3c: [1,0]}'."""
     parts = []
     if f.Y != 0:
         parts.append(f"U1Y: {f.Y}")
@@ -73,6 +74,12 @@ def pyrate_names(model: Model) -> dict[str, str]:
 
 
 def write_model_file(model: Model, path: Path) -> dict[str, str]:
+    """Write the PyR@TE model file (YAML) for model; returns {our coupling name: PyR@TE name}.
+
+    Each Weyl component is a separate fermion (Gen: 1). Each Yukawa is written with PyR@TE's
+    Clebsch-Gordan tensors (cgc) for SU(2) and SU(3), contracted with the two fermions and
+    H or Htilde (for H^*).
+    """
     comps = model.components()
     names = pyrate_names(model)
     lines = ["Author: higgsflow", "Date: 01.01.2026", f"Name: hf{model.hash()}",
@@ -128,6 +135,11 @@ def write_model_file(model: Model, path: Path) -> dict[str, str]:
 
 def run_pyrate(model: Model, loops: int = 2, pyrate_dir=None, timeout: int = 1800,
                workdir=None, cache_dir=None, use_cache: bool = True) -> BetaSystem:
+    """Two-loop beta functions of model computed by PyR@TE, as a BetaSystem (cached on disk).
+
+    Runs PyR@TE in a subprocess on the model file, with only the Python output enabled,
+    and parses its RGEs.py. Raises RuntimeError (with PyR@TE's output) if that file is missing.
+    """
     cache = Path(cache_dir or default_cache_dir()) / f"pyrate_{model.hash()}.json"
     if use_cache and cache.exists():
         bs = BetaSystem.from_json(json.loads(cache.read_text()))
@@ -162,6 +174,11 @@ _LOOP = re.compile(r"if nLoop == (\d+):\s*\n\s*return (.*)")
 
 
 def parse_rges(text: str, names: dict[str, str], couplings: list[str], loops: int) -> BetaSystem:
+    """Parse PyR@TE's RGEs.py into a BetaSystem in our coupling names and order.
+
+    Each beta_<name>(nLoop, ...) function has one return expression per loop order; it is
+    expanded with sympy and split into monomials.
+    """
     inv = {v: k for k, v in names.items()}
     syms = {pn: sp.Symbol(pn, real=True) for pn in names.values()}
     ordered = [syms[names[c]] for c in couplings]

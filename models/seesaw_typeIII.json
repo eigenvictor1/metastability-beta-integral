@@ -1,0 +1,24 @@
+{
+  "name": "seesaw_typeIII",
+  "defaults": {
+    "scan": {"y": {"logspace": [-1.3, 0.544, 100]},"M": {"logspace": [2.3010299956639812, 7, 100]}},
+    "links": {"y": "all"},
+    "benchmarks": [{"y": 0.5, "M": 1e3}, {"y": 0.5, "M": 1e10}],
+    "examples": [{"y": 0.3, "M": 1e3}, {"y": 0.6, "M": 1e6}, {"y": 0.9, "M": 1e9}],
+    "run": {"betas": "native", "plots": true, "trace_range": [1e-3, 1e3]},
+    "trs": {"M": 1e3, "samples": 2000, "range": [0, 1.5]}
+  },
+  "models": [
+    {"name": "seesaw_typeIII_1Sigma", "fields": ["Sigma:(1,3,0)"], "include_sm_mixing": true, "exclude": ["ySigmaL1", "ySigmaL2"], "links": {"y": ["ySigmaL3"]}},
+    {"name": "seesaw_typeIII_2Sigma", "fields": ["Sigma:2x(1,3,0)"], "include_sm_mixing": true, "exclude": ["ySigma1L2", "ySigma1L3", "ySigma2L1", "ySigma2L3"], "links": {"y": ["ySigma1L1", "ySigma2L2"]}},
+    {"name": "seesaw_typeIII_3Sigma", "fields": ["Sigma:3x(1,3,0)"], "include_sm_mixing": true, "exclude": ["ySigma1L2", "ySigma1L3", "ySigma2L1", "ySigma2L3", "ySigma3L1", "ySigma3L2"], "links": {"y": ["ySigma1L1", "ySigma2L2", "ySigma3L3"]}},
+    {"name": "seesaw_typeIII_4Sigma", "fields": ["Sigma:3x(1,3,0)", "SigmaS:(1,3,0)"], "include_sm_mixing": true, "exclude": ["ySigma1L2", "ySigma1L3", "ySigma2L1", "ySigma2L3", "ySigma3L1", "ySigma3L2", "ySigmaSL1", "ySigmaSL2", "ySigmaSL3"], "links": {"y": {"ySigma1L1": 1.414213562373, "ySigma2L2": 1.0, "ySigma3L3": 1.0}}},
+    {"name": "seesaw_typeIII_5Sigma", "fields": ["Sigma:3x(1,3,0)", "SigmaS:2x(1,3,0)"], "include_sm_mixing": true, "exclude": ["ySigma1L2", "ySigma1L3", "ySigma2L1", "ySigma2L3", "ySigma3L1", "ySigma3L2", "ySigmaS1L1", "ySigmaS1L2", "ySigmaS1L3", "ySigmaS2L1", "ySigmaS2L2", "ySigmaS2L3"], "links": {"y": {"ySigma1L1": 1.414213562373, "ySigma2L2": 1.414213562373, "ySigma3L3": 1.0}}},
+    {"name": "seesaw_typeIII_6Sigma", "fields": ["Sigma:3x(1,3,0)", "SigmaS:3x(1,3,0)"], "include_sm_mixing": true, "exclude": ["ySigma1L2", "ySigma1L3", "ySigma2L1", "ySigma2L3", "ySigma3L1", "ySigma3L2", "ySigmaS1L1", "ySigmaS1L2", "ySigmaS1L3", "ySigmaS2L1", "ySigmaS2L2", "ySigmaS2L3", "ySigmaS3L1", "ySigmaS3L2", "ySigmaS3L3"], "links": {"y": {"ySigma1L1": 1.414213562373, "ySigma2L2": 1.414213562373, "ySigma3L3": 1.414213562373}}},
+    {"name": "seesaw_typeIII_7Sigma", "fields": ["Sigma:3x(1,3,0)", "SigmaS:4x(1,3,0)"], "include_sm_mixing": true, "exclude": ["ySigma1L2", "ySigma1L3", "ySigma2L1", "ySigma2L3", "ySigma3L1", "ySigma3L2", "ySigmaS1L1", "ySigmaS1L2", "ySigmaS1L3", "ySigmaS2L1", "ySigmaS2L2", "ySigmaS2L3", "ySigmaS3L1", "ySigmaS3L2", "ySigmaS3L3", "ySigmaS4L1", "ySigmaS4L2", "ySigmaS4L3"], "links": {"y": {"ySigma1L1": 1.732050807569, "ySigma2L2": 1.414213562373, "ySigma3L3": 1.414213562373}}},
+    {"name": "seesaw_typeIII_8Sigma", "fields": ["Sigma:3x(1,3,0)", "SigmaS:5x(1,3,0)"], "include_sm_mixing": true, "exclude": ["ySigma1L2", "ySigma1L3", "ySigma2L1", "ySigma2L3", "ySigma3L1", "ySigma3L2", "ySigmaS1L1", "ySigmaS1L2", "ySigmaS1L3", "ySigmaS2L1", "ySigmaS2L2", "ySigmaS2L3", "ySigmaS3L1", "ySigmaS3L2", "ySigmaS3L3", "ySigmaS4L1", "ySigmaS4L2", "ySigmaS4L3", "ySigmaS5L1", "ySigmaS5L2", "ySigmaS5L3"], "links": {"y": {"ySigma1L1": 1.732050807569, "ySigma2L2": 1.732050807569, "ySigma3L3": 1.414213562373}}},
+    {"name": "seesaw_typeIII_9Sigma", "fields": ["Sigma:3x(1,3,0)", "SigmaS:6x(1,3,0)"], "include_sm_mixing": true, "exclude": ["ySigma1L2", "ySigma1L3", "ySigma2L1", "ySigma2L3", "ySigma3L1", "ySigma3L2", "ySigmaS1L1", "ySigmaS1L2", "ySigmaS1L3", "ySigmaS2L1", "ySigmaS2L2", "ySigmaS2L3", "ySigmaS3L1", "ySigmaS3L2", "ySigmaS3L3", "ySigmaS4L1", "ySigmaS4L2", "ySigmaS4L3", "ySigmaS5L1", "ySigmaS5L2", "ySigmaS5L3", "ySigmaS6L1", "ySigmaS6L2", "ySigmaS6L3"], "links": {"y": {"ySigma1L1": 1.732050807569, "ySigma2L2": 1.732050807569, "ySigma3L3": 1.732050807569}}},
+    {"name": "seesaw_typeIII_10Sigma", "fields": ["Sigma:3x(1,3,0)", "SigmaS:7x(1,3,0)"], "include_sm_mixing": true, "exclude": ["ySigma1L2", "ySigma1L3", "ySigma2L1", "ySigma2L3", "ySigma3L1", "ySigma3L2", "ySigmaS1L1", "ySigmaS1L2", "ySigmaS1L3", "ySigmaS2L1", "ySigmaS2L2", "ySigmaS2L3", "ySigmaS3L1", "ySigmaS3L2", "ySigmaS3L3", "ySigmaS4L1", "ySigmaS4L2", "ySigmaS4L3", "ySigmaS5L1", "ySigmaS5L2", "ySigmaS5L3", "ySigmaS6L1", "ySigmaS6L2", "ySigmaS6L3", "ySigmaS7L1", "ySigmaS7L2", "ySigmaS7L3"], "links": {"y": {"ySigma1L1": 2.0, "ySigma2L2": 1.732050807569, "ySigma3L3": 1.732050807569}}}
+  ],
+  "workers": 0
+}

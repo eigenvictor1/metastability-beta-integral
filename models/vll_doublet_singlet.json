@@ -1,12 +1,14 @@
 {
+  "defaults": {
+    "scan": {
+      "y": {"linspace": [0.0, 1.0, 26]},
+      "M": {"logspace": [3, 8, 21]}
+    }
+  },
   "models": [
     {
       "name": "VLL_doublet_singlet",
       "fields": ["L4:(1,2,-1/2)", "L4c:(1,2,1/2)", "N:(1,1,0)"],
-      "scan": {
-        "y": {"linspace": [0.0, 1.0, 26]},
-        "M": {"logspace": [3, 8, 21]}
-      },
       "links": {"y": "all"},
       "examples": [
         {"y": 0.2, "M": 1e3},

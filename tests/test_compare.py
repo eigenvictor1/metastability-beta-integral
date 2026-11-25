@@ -39,6 +39,6 @@ def test_native_vs_pyrate(name, tmp_path):
 def test_copies_vs_pyrate(tmp_path):
     m = Model()
     m.add(W("L4", "1", 2, "-1/2"), W("L4c", "1", 2, "1/2"), W("N", "1", 1, 0, copies=2))
-    assert "y_L4_N_2" in m.new_yukawa_names()
+    assert "yL4N2" in m.new_yukawa_names()
     rep = compare(compute_betas(m), run_pyrate(m, workdir=tmp_path))
     assert rep.agree, rep.to_markdown()
