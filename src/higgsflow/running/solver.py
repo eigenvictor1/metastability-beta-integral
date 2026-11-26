@@ -23,18 +23,20 @@ The running continues past λ = 0 and stops at the first of
 * perturbativity  -> a gauge coupling, y_t or λ reaches its limit (theory/couplings.py), or the
                      overall strength y_eff of the new Yukawas reaches √(4π) (running/strength.py;
                      without a model: each new Yukawa), or the loop expansion of the gauge
-                     sector in g₂ breaks down: in β_λ, the two-loop g₂⁶ term outgrows the
-                     pure-gauge one-loop terms (g⁴, always positive). With many SU(2) charged
-                     fermions the g₂⁶ term is large and negative, and beyond that point it would
-                     drive λ down artificially (two loops beating one loop)
+                     sector breaks down: in β_λ, the two-loop gᵢ⁶ term of one gauge coupling
+                     (g₁, g₂ or g₃) outgrows the pure-gauge one-loop terms (g⁴, always positive).
+                     With many SU(2) charged fermions the g₂⁶ term is large and negative (with
+                     large hypercharges, the g₁⁶ one), and beyond that point it would drive λ
+                     down artificially (two loops beating one loop)
 * μ = μ_max
 
 The status of the run is
 
 * 'unstable'         λ crossed zero before the running stopped; μ_I = the first crossing
 * 'nonperturbative'  the perturbativity limit was reached with λ > 0 all the way
-                     ('g2_nonpert' instead if what was reached is the limit of g_2 or the loop
-                     breakdown driven by g_2: no instability while g_2 is perturbative)
+                     ('g1_nonpert', 'g2_nonpert' or 'g3_nonpert' instead if what was reached is
+                     the limit of that gauge coupling or the loop breakdown driven by it: no
+                     instability while the gauge couplings are perturbative)
 * 'stable'           μ_max was reached with λ > 0 all the way
 
 Minimum of λ: a point where β_λ changes sign from negative to positive inside the range of
@@ -55,6 +57,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 from scipy.integrate import solve_ivp
+from scipy.optimize import brentq
 
 from ..rge.system import BetaSystem
 from ..settings import Numerics
@@ -67,7 +70,8 @@ from .threshold import Matching, ThresholdMatching
 
 SM_COUPLINGS = list(cp.SM_NAMES)
 LOOP = 16 * np.pi ** 2
-STATUSES = ("unstable", "stable", "g2_nonpert", "nonperturbative", "failed")
+GAUGE_NONPERT = tuple(f"{g}_nonpert" for g in cp.GAUGE)   # ("g1_nonpert", "g2_nonpert", "g3_nonpert")
+STATUSES = ("unstable", "stable", *GAUGE_NONPERT, "nonperturbative", "failed")
 log = logging.getLogger(__name__)
 
 BetaFunction = Callable[[float, np.ndarray], np.ndarray]
@@ -335,7 +339,8 @@ class Runner:
 
     def _gauge_parts(self, names: list[str]):
         """Pure-gauge monomials of β_λ at one and two loops for a state, as (coefficients,
-        exponents of (g1, g2, g3), g₂-only flags) per loop; None below two loops."""
+        exponents of (g1, g2, g3), flags of the terms with a single gauge coupling (one column per
+        coupling), gauge indices) per loop; None below two loops."""
         key = id(names)
         if key not in self._gauge:
             bs = self._systems.get(key)
@@ -349,33 +354,37 @@ class Runner:
                              if not any(m[k] for k in others)]
                     coef = np.array([c for c, _ in terms])
                     exps = np.array([e for _, e in terms], dtype=float).reshape(-1, 3)
-                    only_g2 = (exps[:, 0] == 0) & (exps[:, 2] == 0)
-                    parts.append((coef, exps, only_g2, gi))
+                    only = np.stack([(exps[:, j] > 0) & (np.delete(exps, j, axis=1) == 0).all(axis=1)
+                                     for j in range(3)], axis=1)
+                    parts.append((coef, exps, only, gi))
             self._gauge[key] = parts
         return self._gauge[key]
 
-    def _loop_margin(self, x: np.ndarray, names: list[str]) -> tuple[float, bool] | None:
-        """1 − |g₂⁶ term of β_λ (two loops)| / (one-loop pure-gauge part of β_λ, > 0): < 0 once
-        the loop expansion in g₂ has broken down. (Only g₂ is tested: a large g₁ can give the
-        same breakdown, but it is left to the plain limit on |g₁|.)"""
+    def _loop_margin(self, x: np.ndarray, names: list[str]) -> tuple[float, str] | None:
+        """For each gauge coupling gᵢ, 1 − |gᵢ⁶ term of β_λ (two loops)| / (one-loop pure-gauge
+        part of β_λ, > 0): < 0 once the loop expansion in gᵢ has broken down. Returns the smallest
+        margin and the name of its coupling."""
         parts = self._gauge_parts(names)
         if parts is None:
             return None
-        (c1, e1, _, gi), (c2, e2, g2only, _) = parts
+        (c1, e1, _, gi), (c2, e2, only, _) = parts
         g = np.abs(x[gi])
         one = float(np.sum(c1 * np.prod(g ** e1, axis=1))) / LOOP
-        two = float(np.sum((c2 * np.prod(g ** e2, axis=1))[g2only])) / LOOP ** 2
         if one <= 0:
             return None
-        return 1 - abs(two) / one, True
+        terms = c2 * np.prod(g ** e2, axis=1) / LOOP ** 2
+        margins = [1 - abs(float(np.sum(terms[only[:, j]]))) / one for j in range(3)]
+        j = int(np.argmin(margins))
+        return margins[j], cp.GAUGE[j]
 
     def _perturbative(self, x: np.ndarray) -> bool:
         return self._margin(x, self.names) > 0
 
     def _nonpert_status(self, x: np.ndarray, names: list[str]) -> str:
-        """Status when the perturbativity limit is reached at x: 'g2_nonpert' if the limit
-        reached is that of g_2 (λ is then still positive), 'nonperturbative' otherwise."""
-        if cp.G2.name not in names:
+        """Status when the perturbativity limit is reached at x: 'g1_nonpert', 'g2_nonpert' or
+        'g3_nonpert' if the limit reached is that of a gauge coupling, or the loop breakdown
+        driven by it, with λ still positive; 'nonperturbative' otherwise."""
+        if not set(cp.GAUGE) <= set(names):
             return "nonperturbative"
         lim, strength = self._limits(names)
         margins = lim - np.abs(x)
@@ -383,11 +392,11 @@ class Runner:
         loop = self._loop_margin(x, names)
         if loop is not None and loop[0] < min(float(np.min(margins)),
                                               cp.PERT_GAUGE_YUKAWA - strength(x) if strength else np.inf):
-            return "g2_nonpert" if loop[1] and positive else "nonperturbative"   # loop breakdown
+            return f"{loop[1]}_nonpert" if positive else "nonperturbative"   # loop breakdown
         if strength is not None and cp.PERT_GAUGE_YUKAWA - strength(x) < float(np.min(margins)):
             return "nonperturbative"                         # the new Yukawas got there first
         k = int(np.argmin(margins))
-        return "g2_nonpert" if names[k] == cp.G2.name and x[names.index(QUARTIC)] > 0 else "nonperturbative"
+        return f"{names[k]}_nonpert" if names[k] in cp.GAUGE and positive else "nonperturbative"
 
     # -- integration of one segment -------------------------------------------------
     def _segment(self, f: BetaFunction, t_span: tuple[float, float], x0: np.ndarray,
@@ -445,7 +454,25 @@ class Runner:
                 zero = float(te[0])
             minima = [(float(t), float(y[idx_lam])) for t, y in zip(sol.t_events[2], sol.y_events[2])
                       if t_start < t < t_cut]
+            if zero is None:
+                zero = _missed_zero(minima)
             return {"t_zero": zero, "minima": minima}
+
+        def _missed_zero(minima: list[tuple[float, float]]) -> float | None:
+            """A dip of λ below zero inside a single solver step changes no sign at the step
+            ends, so the event misses it; the minimum is still found (β_λ changes sign). Locate
+            the crossing on the dense output between the step start and the first negative
+            minimum."""
+            neg = [t for t, lam in minima if lam < 0]
+            if not neg or sol.sol is None:
+                return None
+            t_m = neg[0]
+            before = sol.t[sol.t < t_m]
+            t_a = float(before[-1]) if before.size else t_start
+            g = lambda t: float(sol.sol(t)[idx_lam])            # noqa: E731
+            if g(t_a) <= 0:
+                return t_a
+            return float(brentq(g, t_a, t_m, xtol=1e-10))
 
         if bad_t:
             t_bad = min(bad_t)

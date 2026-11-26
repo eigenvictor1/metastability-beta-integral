@@ -17,6 +17,5 @@
       ],
       "run": {"betas": "both", "loops": 2}
     }
-  ],
-  "workers": 0
+  ]
 }

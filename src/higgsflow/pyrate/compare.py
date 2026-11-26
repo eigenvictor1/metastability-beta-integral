@@ -85,8 +85,12 @@ def _mono_str(m, names):
     return s or "1"
 
 
-def map_conventions(native: BetaSystem, pyrate: BetaSystem):
-    """Return (k dict, calibrated term names, pyrate system rescaled to native normalisation)."""
+def map_conventions(native: BetaSystem, pyrate: BetaSystem, loops: tuple[int, ...] | None = None):
+    """Return (k dict, calibrated term names, pyrate system rescaled to native normalisation).
+
+    loops: the loop orders used to choose the Yukawa signs (default: all); with a native
+    system computed at one loop only, pass (1,).
+    """
     names = native.couplings
     pyrate = pyrate.restrict(names)
     yuks = [c for c in names if c not in GAUGE and c != QUARTIC]
@@ -121,7 +125,7 @@ def map_conventions(native: BetaSystem, pyrate: BetaSystem):
     sign_sets = product([1, -1], repeat=len(yuks)) if len(yuks) <= 10 else [tuple([1] * len(yuks))]
     for signs in sign_sets:
         k, mapped = rescale(signs)
-        score = _diff_score(native, mapped)
+        score = _diff_score(native, mapped, loops)
         if best is None or score < best[0] - 1e-12:
             best = (score, k, mapped)
     if best is None:
@@ -130,11 +134,13 @@ def map_conventions(native: BetaSystem, pyrate: BetaSystem):
     return best[1], calibrated, best[2]
 
 
-def _diff_score(a: BetaSystem, b: BetaSystem) -> float:
+def _diff_score(a: BetaSystem, b: BetaSystem, loops: tuple[int, ...] | None = None) -> float:
     """Sum of |coefficient differences| between two systems (used to choose the Yukawa signs)."""
     s = 0.0
     for c in a.couplings:
         for L in set(a.coeffs[c]) | set(b.coeffs[c]):
+            if loops is not None and L not in loops:
+                continue
             da, db = a.coeffs[c].get(L, {}), b.coeffs[c].get(L, {})
             for m in set(da) | set(db):
                 s += abs(da.get(m, 0.0) - db.get(m, 0.0))

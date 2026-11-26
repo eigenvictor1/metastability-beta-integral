@@ -62,13 +62,17 @@ def cmd_replot(a):
     """`higgsflow replot`: redraw the plots from the data stored by a previous run (no running)."""
     from .pipeline import replot
     target = Path(a.target)
-    if target.suffix == ".json":                 # a model file: its results folder
+    settings = None
+    if target.suffix == ".json":                 # a model file: its results folder, and its plot settings
         from .paths import results_root
-        target = results_root() / config.load(target).name
+        study = config.load(target)
+        target = results_root() / study.name
+        settings = {s.model.label(): {"y_label": s.y_label, "title": s.model.latex_title()}
+                    for s in study.specs()}
     if not target.is_dir():
         print(f"no results folder {short(target)}")
         return 1
-    drawn = replot(target, a.only)
+    drawn = replot(target, a.only, settings)
     print(f"{len(drawn)} model(s) redrawn in {short(target)}")
     return 0 if drawn else 1
 
@@ -132,7 +136,7 @@ def main(argv=None) -> int:
     r = sub.add_parser("run", help="analyse every model in the file")
     r.add_argument("file")
     r.add_argument("--betas", choices=["native", "pyrate", "both"], help="override for all models")
-    r.add_argument("--workers", type=int, help="processes (0 = all cores)")
+    r.add_argument("--workers", type=int, help="processes (default 3/4 of the cores; 0 = all cores)")
     r.add_argument("--trs", action=argparse.BooleanOptionalAction, default=None,
                    help="make (--trs) or skip (--no-trs) the trace plots, overriding the file")
     r.set_defaults(fn=cmd_run)
@@ -148,7 +152,7 @@ def main(argv=None) -> int:
 
     b = sub.add_parser("betas", help="compute (and compare) the beta functions only")
     b.add_argument("file")
-    b.add_argument("--source", choices=["native", "pyrate", "both"], default="native")
+    b.add_argument("--source", choices=["native", "pyrate", "both"], default="pyrate")
     b.add_argument("--latex")
     b.set_defaults(fn=cmd_betas)
 

@@ -25,6 +25,7 @@ from .output.layout import (
     plot_names,
     prepare_folder,
     write_boundaries_csv,
+    write_curves_csv,
     write_json,
     write_run_csv,
     write_samples_csv,
@@ -35,6 +36,7 @@ from .paths import short
 from .pyrate.compare import ComparisonReport, compare, map_conventions
 from .rge.engine import compute_betas
 from .rge.system import BetaSystem
+from .running.curves import Curve
 from .running.scan import NO_NEW_PHYSICS, SampleResult, ScanResult, resolve_params, run_samples, run_scan
 from .running.solver import Runner, RunResult
 from .running.threshold import MassError, ThresholdMatching
@@ -125,14 +127,18 @@ def compute_systems(model: Model, betas: str, loops: int, pyrate_dir: str | Path
                     ) -> tuple[dict[str, BetaSystem], dict[str, BetaSystem], ComparisonReport | None]:
     """Return ({source: BetaSystem}, {source: SM BetaSystem}, report or None).
 
-    With betas='both' the PyR@TE systems are re-expressed in the native Yukawa
-    normalisation, so that both run from identical boundary conditions.
+    PyR@TE betas are always checked against the native ones (also with betas='pyrate',
+    where the native betas are only used for the check): a warning is logged if they do not
+    coincide. The PyR@TE systems are re-expressed in the native Yukawa normalisation, which
+    the boundary conditions, threshold matching and traces use.
     """
     systems, sm = {}, {}
-    if betas in ("native", "both"):
+    native = sm_native = None
+    if betas in ("native", "both", "pyrate"):
         log.debug("computing native betas")
-        systems["native"] = compute_betas(model, loops)
-        sm["native"] = compute_betas(Model(), loops)
+        native, sm_native = compute_betas(model, loops), compute_betas(Model(), loops)
+        if betas != "pyrate":
+            systems["native"], sm["native"] = native, sm_native
     if betas in ("pyrate", "both"):
         from .pyrate.bridge import run_pyrate
         log.debug("computing betas with PyR@TE")
@@ -141,15 +147,23 @@ def compute_systems(model: Model, betas: str, loops: int, pyrate_dir: str | Path
     if not systems:
         raise ValueError(f"unknown beta source {betas!r}")
     report = None
-    if betas == "both":
-        report = compare(systems["native"], systems["pyrate"])
-        _, _, systems["pyrate"] = map_conventions(systems["native"], systems["pyrate"])
-        _, _, sm["pyrate"] = map_conventions(sm["native"], sm["pyrate"])
-        log.info("native vs PyR@TE agreement: %s (Yukawa map %s)",
-                 "YES" if report.agree else "NO", report.calibration)
+    if native is not None and sm_native is not None and "pyrate" in systems:
+        report = compare(native, systems["pyrate"])
+        _, _, systems["pyrate"] = map_conventions(native, systems["pyrate"])
+        _, _, sm["pyrate"] = map_conventions(sm_native, sm["pyrate"])
+        log.debug("native vs PyR@TE agreement: %s (Yukawa map %s)",
+                  "YES" if report.agree else "NO", report.calibration)
         if not report.agree:
-            log.warning("beta functions disagree: see betas/comparison.md")
+            _warn_disagree(model.label(), report)
     return systems, sm, report
+
+
+def _warn_disagree(label: str, report: ComparisonReport, where: str = "") -> None:
+    """Terminal warning: PyR@TE and native beta functions differ."""
+    n = len(report.mismatches)
+    log.warning("%s%s: PyR@TE and native beta functions do NOT coincide (%d coefficient(s) differ, "
+                "max relative difference at random points %.2g); see betas/comparison.md",
+                label, where, n, report.numeric_max_rel)
 
 
 def betas_text(spec: RunSpec) -> str:
@@ -186,7 +200,7 @@ def step_models(model: Model):
 
 def native_models(spec: RunSpec) -> list[Model]:
     """Every theory whose native beta functions run_analysis(spec) needs (SM included)."""
-    if spec.betas not in ("native", "both"):
+    if spec.betas not in ("native", "both", "pyrate"):     # PyR@TE is checked against them
         return []
     model = spec.prepared().model
     return [Model(), model, *(m for _, m in step_models(model))]
@@ -204,8 +218,11 @@ def compute_steps(model: Model, systems: dict[str, BetaSystem], loops: int,
         if "pyrate" in systems:
             from .pyrate.bridge import run_pyrate
             bs = run_pyrate(m, loops, pyrate_dir=pyrate_dir)
-            if "native" in systems:
-                _, _, bs = map_conventions(out["native"][state], bs)
+            native = out["native"][state] if "native" in systems else compute_betas(m, loops)
+            rep = compare(native, bs)
+            if not rep.agree:
+                _warn_disagree(model.label(), rep, f" (theory below threshold {state})")
+            _, _, bs = map_conventions(native, bs)
             out["pyrate"][state] = bs
     return out
 
@@ -279,10 +296,12 @@ def plot_data(a: Analysis) -> dict:
     overlay = (with_root_axis(with_trace_axis(a.overlay_scan, traces, a.spec.links, a.spec.M))
                if a.overlay_scan is not None else None)
     return {"version": PLOT_DATA_VERSION, "theory": theory,
-            "name": f"{theory}, {a.spec.model.fields_text()}",       # plot titles: name and representations
+            "name": f"{theory}, {a.spec.model.fields_text()}",       # running and trace plot titles
+            "title": a.spec.model.latex_title(),                      # map titles (LaTeX)
             "runs": a.runs, "sm_run": a.sm_run, "overlay_runs": a.overlay_runs,
             "scan": scan, "overlay": overlay, "samples": a.samples,
-            "limits": {TR4R: tuple(v ** 0.25 for v in a.spec.trace_range)}}
+            "limits": {TR4R: tuple(v ** 0.25 for v in a.spec.trace_range)},
+            "y_label": a.spec.y_label}
 
 
 def draw_plots(run_folder: Path, d: dict, backup: bool = True) -> None:
@@ -296,18 +315,16 @@ def draw_plots(run_folder: Path, d: dict, backup: bool = True) -> None:
     plot_running(run_folder / running, d["runs"], d["sm_run"], d["overlay_runs"] or None,
                  title=f"{name}: running of λ")
     scan, limits = d["scan"], d["limits"]
-    plot_instability(run_folder / inscale, scan, d["overlay"], title=f"{name}: instability scale",
-                     limits=limits)
-    plot_instability(run_folder / inscale_min, scan, title=f"{name}: instability scale and minimum of λ",
-                     limits=limits, minima="mu")
-    plot_instability(run_folder / inscale_lammin, scan,
-                     title=f"{name}: instability scale and metastability",
-                     limits=limits, minima="lam")
+    title = d.get("title") or name            # the maps: the particle and its representation
+    style = {"limits": limits, "y_label": d.get("y_label"), "color_range": d.get("color_range")}
+    plot_instability(run_folder / inscale, scan, d["overlay"], title=title, **style)
+    plot_instability(run_folder / inscale_min, scan, title=title, minima="mu", **style)
+    plot_instability(run_folder / inscale_lammin, scan, title=title, minima="lam", **style)
     if d["samples"] is not None:
         plot_traces(run_folder / trs, d["samples"], title=f"{name}: instability scale")
 
 
-_STORED = {"ScanResult": ScanResult, "SampleResult": SampleResult, "RunResult": RunResult}
+_STORED = {"ScanResult": ScanResult, "SampleResult": SampleResult, "RunResult": RunResult, "Curve": Curve}
 
 
 def _pack(x):
@@ -348,27 +365,73 @@ def load_plot_data(path: Path) -> dict:
         return _unpack(pickle.load(fh))
 
 
-def replot(run_folder: Path, only: list[str] | None = None) -> list[str]:
+def replot(run_folder: Path, only: list[str] | None = None,
+           settings: dict[str, dict] | None = None) -> list[str]:
     """Redraw the plots of every theory in a results folder from their stored plot data,
     without running anything (e.g. after changing the plot style). only: theory labels to
-    redraw. Returns the theories drawn; theories without stored data are skipped with a
-    warning (they were run before plot data was stored: run them once more)."""
+    redraw. settings: {theory: plot settings} replacing the stored ones (e.g. "y_label", from
+    the model file). Returns the theories drawn; theories without stored data are skipped with a
+    warning (they were run before plot data was stored: run them once more).
+
+    All maps are drawn on one colour range of log10 μ_I (exactly the values shown, over every
+    theory of the folder, also those not in only), and its colour bar is written as COLORBAR in the folder,
+    to be set above the maps in a LaTeX figure (the maps have none of their own)."""
+    color_range = shared_color_range(run_folder)
     drawn = []
     for data in sorted(run_folder.glob(f"*/data/{PLOT_DATA}")):
         theory = data.parent.parent.name
         if only and theory not in only:
             continue
-        draw_plots(run_folder, load_plot_data(data), backup=False)
+        d = load_plot_data(data)
+        d.update((settings or {}).get(theory, {}))
+        if color_range is not None:
+            d["color_range"] = color_range
+        draw_plots(run_folder, d, backup=False)
         log.info("%s: plots redrawn", theory)
         drawn.append(theory)
+    if color_range is not None and drawn:
+        from .output.plots import map_colorbar
+        map_colorbar(run_folder / COLORBAR, color_range)
+        log.info("colour bar of the maps: %s", short(run_folder / COLORBAR))
+        from .output.plots import map_legend
+        map_legend(run_folder / LEGEND)
+        log.info("legend of the map regions: %s", short(run_folder / LEGEND))
     for folder in sorted(p for p in run_folder.iterdir() if p.is_dir() and p.name != "backup"):
         if not (folder / "data" / PLOT_DATA).exists() and (not only or folder.name in only):
             log.warning("%s: no stored plot data (run it once with this version)", folder.name)
     return drawn
 
 
+COLORBAR = "inscale-colorbar.pdf"     # in a run folder: the colour bar shared by its maps
+LEGEND = "inscale-legend.pdf"         # ... and the legend of their stable/metastable/unstable regions
+
+
+def shared_color_range(run_folder: Path) -> tuple[float, float] | None:
+    """Range of log10 μ_I shown in the maps of every theory in a run folder: exactly from the
+    lowest to the highest value inside the plotted axis limits (not rounded)."""
+    lo, hi = np.inf, -np.inf
+    for data in run_folder.glob(f"*/data/{PLOT_DATA}"):
+        d = load_plot_data(data)
+        scan = d.get("scan")
+        if scan is None or len(scan.axes) != 2:
+            continue
+        with np.errstate(divide="ignore", invalid="ignore"):
+            z = np.log10(np.asarray(scan.mu_I, dtype=float))
+        shown = np.ones(z.shape, bool)
+        for a, (n, v) in enumerate(scan.axes.items()):          # inside the plotted limits only
+            if n in (d.get("limits") or {}):
+                vlo, vhi = d["limits"][n]
+                inside = (np.asarray(v) >= vlo) & (np.asarray(v) <= vhi)
+                shown &= np.expand_dims(inside, 1 - a)
+        z = z[shown & np.isfinite(z)]
+        if z.size:
+            lo, hi = min(lo, float(z.min())), max(hi, float(z.max()))
+    return (lo, hi) if np.isfinite(lo) and hi > lo else None
+
+
 def _write_data(a: Analysis) -> None:
-    """data/: running_<k>.csv per example, running_SM.csv and scan.csv."""
+    """data/: running_<k>.csv per example, running_SM.csv, scan.csv, boundaries.csv and
+    curves.csv (traced curves)."""
     data = a.folder / "data"
     for k, r in enumerate(a.runs, 1):
         write_run_csv(data / f"running_{k}.csv", r)
@@ -376,6 +439,7 @@ def _write_data(a: Analysis) -> None:
     write_scan_csv(data / "scan.csv", a.scan, a.overlay_scan)
     save_plot_data(data / PLOT_DATA, plot_data(a))
     write_boundaries_csv(data / "boundaries.csv", a.scan)
+    write_curves_csv(data / "curves.csv", a.scan)
     if a.samples is not None:
         write_samples_csv(data / "trs_samples.csv", a.samples)
 
@@ -388,13 +452,15 @@ def _write_betas(a: Analysis) -> None:
     for src, bs in a.systems.items():
         (betas / f"betas_{src}.tex").write_text(bs.latex(), encoding="utf-8")
         write_json(betas / f"betas_{src}.json", bs.to_json())
-    if a.report is None or a.overlay_scan is None:
+    if a.report is None:
         return
     rep = a.report
-    rep.mu_I = {f"example {k}": f"native {r.mu_I}, PyR@TE {o.mu_I}"
-                for k, (r, o) in enumerate(zip(a.runs, a.overlay_runs), 1)}
-    ok = np.isfinite(a.scan.mu_I) & np.isfinite(a.overlay_scan.mu_I)
-    if ok.any():
+    if a.overlay_scan is not None:          # betas='both': the μ_I differences too
+        rep.mu_I = {f"example {k}": f"native {r.mu_I}, PyR@TE {o.mu_I}"
+                    for k, (r, o) in enumerate(zip(a.runs, a.overlay_runs), 1)}
+    ok = (np.isfinite(a.scan.mu_I) & np.isfinite(a.overlay_scan.mu_I)) if a.overlay_scan is not None else None
+    if ok is not None and ok.any():
+        assert a.overlay_scan is not None
         d = np.abs(np.log10(a.scan.mu_I[ok]) - np.log10(a.overlay_scan.mu_I[ok])).max()
         rep.mu_I["scan: max |Δ log10 μ_I|"] = f"{d:.2e}"
     (betas / "comparison.md").write_text(rep.to_markdown(), encoding="utf-8")

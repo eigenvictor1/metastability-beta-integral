@@ -8,6 +8,7 @@ inscale-trs-<theory>.pdf   μ_I over the (Tr(YY†), Tr((YY†)²)) plane at fix
 from __future__ import annotations
 
 import functools
+import re
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -15,19 +16,27 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")
+import matplotlib.cm
+import matplotlib.colors
 import matplotlib.pyplot as plt
 import matplotlib.ticker
 import matplotlib.tri as mtri
 import numpy as np
 from matplotlib import patheffects
-from matplotlib.patches import Patch, PathPatch
+from matplotlib.patches import PathPatch, Rectangle
 
 from ..running.boundary import M_PLANCK
+from ..running.curves import META_LAMBDA, Curve, meta_value
 from ..running.scan import SampleResult, ScanResult
-from ..running.solver import RunResult
+from ..running.solver import GAUGE_NONPERT, RunResult
 from ..running.traces import TR2, TR4, TR4R
 from ..settings import MAP_GRID, PLOT_DPI
 from ..theory import couplings as cp
+
+# TeX look: Computer Modern for text (cmr10, glyphs it lacks from DejaVu Serif) and for math
+matplotlib.rcParams.update({"font.family": ["cmr10", "DejaVu Serif"],
+                            "mathtext.fontset": "cm", "axes.formatter.use_mathtext": True})
+BOLD = {"fontfamily": ["cmb10", "DejaVu Serif"]}     # bold Computer Modern (for the names in the maps)
 
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
 INK, INK2, GRID = "#0b0b0b", "#52514e", "#e4e3df"
@@ -36,9 +45,9 @@ HATCH = "#8a8984"                                                        # hatch
 REGION = tuple(0.45 * np.array(matplotlib.colors.to_rgb(NEUTRAL)) + 0.55)   # NEUTRAL at 45% on white, opaque
 SEQ = matplotlib.colormaps["magma"]           # colour map of the instability-scale maps (same as seaborn's "magma")
 STATUS_TEXT = {"unstable": "unstable", "stable": "stable up to $M_{Pl}$",
-               "g2_nonpert": "$g_2$ non-perturbative",
+               **{f"{g}_nonpert": f"{cp.latex(g)} non-perturbative" for g in cp.GAUGE},
                "nonperturbative": "non-perturbative", "failed": "integration failed"}
-STATUS_MARKER = {"g2_nonpert": "s", "nonperturbative": "^", "failed": "x"}
+STATUS_MARKER = {"g1_nonpert": "v", "g2_nonpert": "s", "g3_nonpert": "D", "nonperturbative": "^", "failed": "x"}
 LAMBDA_FLOOR = -0.5                           # lowest λ shown in the running plot
 LINESTYLES = ["-", "--", ":", "-.", (0, (5, 1, 1, 1)), (0, (1, 1))]
 
@@ -86,6 +95,69 @@ def _refine(xa: np.ndarray, ya: np.ndarray, Z: np.ndarray, logx: bool, logy: boo
     FX, FY = np.meshgrid(fx, fy, indexing="ij")
     Zf = interp(np.stack([FX, FY], axis=-1))
     return (10 ** FX if logx else FX), (10 ** FY if logy else FY), Zf
+
+
+def _mu_I_field(scan: ScanResult, xa: np.ndarray, ya: np.ndarray, logx: bool, logy: bool,
+                green: np.ndarray | None = None
+                ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
+    """log10 μ_I on the fine grid, with the right shape near the stable boundary.
+
+    Near the boundary λ touches zero at its minimum: λ(t) ≈ λ_min + a (t - t_min)² with
+    t = log10 μ, so t_I = t_min - sqrt(-λ_min / a). μ_I therefore has a square-root edge,
+    which bilinear interpolation of log10 μ_I cannot follow (contours bunch up and wiggle
+    along the boundary). Instead λ_min, t_min and the curvature a = -λ_min / (t_min - t_I)²
+    are interpolated (all three vary slowly, also across the boundary) and t_I is rebuilt
+    from them; at the scan points this is exact. Cells next to a point without a minimum of
+    λ use plain interpolation. Also returns where the model is used near the boundary,
+    so that contour lines reach the stable boundary instead of stopping a cell short of it.
+    """
+    Z = np.log10(scan.mu_I)
+    Xf, Yf, plain = _refine(xa, ya, _fill_nan(Z), logx, logy)
+    none = np.zeros(plain.shape, bool)
+    if scan.lam_min is None or scan.mu_min is None:
+        return Xf, Yf, plain, none, None
+    lam = np.asarray(scan.lam_min, float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        tm = np.log10(np.asarray(scan.mu_min, float))
+        ok = np.isfinite(lam) & np.isfinite(tm)
+        gap = tm - Z
+        a = np.where(ok & np.isfinite(Z) & (lam < 0) & (gap > 0), -lam / gap ** 2, np.nan)
+    if np.isfinite(a).sum() < 4 or ok.sum() < 4:
+        return Xf, Yf, plain, none, None
+    _, _, lamf = _refine(xa, ya, _fill_nan(np.where(ok, lam, np.nan)), logx, logy)
+    _, _, tmf = _refine(xa, ya, _fill_nan(np.where(ok, tm, np.nan)), logx, logy)
+    _, _, af = _refine(xa, ya, _fill_nan(a), logx, logy)
+    _, _, okf = _refine(xa, ya, ok.astype(float), logx, logy)
+    with np.errstate(invalid="ignore"):
+        model = tmf - np.sqrt(np.clip(-lamf, 0, None) / af)
+    use = (okf > 1 - 1e-9) & np.isfinite(model)
+    # only near the stable boundary (where the square-root edge matters), blended smoothly
+    # into plain interpolation from MODEL_CELLS to 2 MODEL_CELLS scan cells away from it
+    # (distance to the green region from its field, see _region_fields; the λ_min field is no
+    # good for this far from the boundary, where λ_min is large and changes fast)
+    if green is None or green.shape != plain.shape:
+        return Xf, Yf, plain, none, None
+    c = 1.0 / max(min(len(xa), len(ya)) - 1, 1)
+    w = np.clip(2 - np.abs(green) / (MODEL_CELLS * c), 0, 1)
+    w = np.where(use & np.isfinite(w), w, 0.0)
+    Zf = np.where(w > 0, w * np.nan_to_num(model) + (1 - w) * np.nan_to_num(plain, nan=0.0), plain)
+    Zf = np.where((w > 0) & ~np.isfinite(plain), model, Zf)
+    near = (w > 0) & use
+    # past the boundary only by a couple of fine cells: further in, the continued field (μ_min)
+    # would have contours (and labels) of its own inside the stable region
+    d = _signed_distance(np.where(near, lamf, np.nan))
+    return Xf, Yf, Zf, near & (d < 2.0 / plain.shape[0]), np.where(near, lamf, np.nan)
+
+
+MODEL_CELLS = 2.0     # _mu_I_field: square-root model within this many scan cells of the boundary
+
+
+def _signed_distance(lamf: np.ndarray) -> np.ndarray:
+    """λ_min / |∇λ_min| on the fine grid: approximately the signed distance to λ_min = 0, in
+    units of the axis lengths (the units of the region fields), > 0 on the stable side."""
+    gx, gy = np.gradient(lamf, 1.0 / (lamf.shape[0] - 1), 1.0 / (lamf.shape[1] - 1))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return lamf / np.hypot(gx, gy)
 
 
 def _lg(r: RunResult) -> np.ndarray:
@@ -136,7 +208,7 @@ def _lambda_panel(ax, examples: list[RunResult], sm_run: RunResult, overlay: lis
     ax.plot([], [], "o", ms=7, color=INK2, mec="white", mew=1.5, label=r"$\lambda=0$: instability scale $\mu_I$")
     if sm_run.mu_min or any(r.mu_min for r in examples):
         ax.plot([], [], "D", ms=6, color=INK2, mec="white", mew=1.2, label=r"minimum of $\lambda$")
-    for st in ("g2_nonpert", "nonperturbative", "failed"):
+    for st in (*GAUGE_NONPERT, "nonperturbative", "failed"):
         if st in seen:
             ax.plot([], [], STATUS_MARKER[st], ms=8, color=INK2, mew=2, label=STATUS_TEXT[st])
     ax.set_ylabel(r"$\lambda(\mu)$", color=INK)
@@ -190,9 +262,12 @@ def _yukawa_panel(ax, examples: list[RunResult], sm_run: RunResult) -> None:
 # status shading: (status, hatch, legend label)
 # status regions: (status, hatch, legend label, colour)
 STABLE_GREEN = "#9fd39a"
-STABLE_ANY = "stable or g2_nonpert"            # field of the two stable regions together
-SHADED = (("stable", None, "Stable", STABLE_GREEN),
-          ("g2_nonpert", "\\\\", "$g_2$ non-perturbative", STABLE_GREEN),
+STABLE_KEYS = ("stable", *GAUGE_NONPERT)       # statuses with λ > 0 all the way (green regions)
+STABLE_ANY = "stable or gauge_nonpert"         # field of the stable regions together
+SHADED = (("stable", None, "stable", STABLE_GREEN),
+          ("g1_nonpert", "||", STATUS_TEXT["g1_nonpert"], STABLE_GREEN),
+          ("g2_nonpert", "\\\\", STATUS_TEXT["g2_nonpert"], STABLE_GREEN),
+          ("g3_nonpert", "--", STATUS_TEXT["g3_nonpert"], STABLE_GREEN),
           ("nonperturbative", "///", "non-perturbative", None),
           ("failed", "xx", "integration failed", None),
           ("unscanned", "..", "outside the scan", None))
@@ -205,9 +280,9 @@ MIN_SHADE = (0.10, 0.05, 0.95)                # cornflower shading between them:
                                               # highest μ_min, step per contour, cap (never opaque)
 LAM_MIN_LABEL = r"$\lambda_{\min}$"            # value of λ at its minimum
 LAM_MIN_KEEP = -0.06                          # λ_min contour always drawn (when in range)
-META_LAMBDA = -0.06                           # metastable if the lowest λ stays above this
 META_YELLOW = (1.00, 0.85, 0.10, 0.22)        # translucent yellow: metastable
 UNSTABLE_RED = (0.80, 0.15, 0.12, 0.22)       # translucent red: unstable
+META_LABEL_BOX = (1.00, 0.85, 0.10, 0.55)      # semi-transparent yellow behind the label of that line
 META_LINE = "#f2c200"                         # yellow: the line λ_min = META_LAMBDA
 LAM_MIN_LINE = "#2e8b57"                      # λ_min contours, labels and minimum line: seaborn "seagreen"
 EXCLUDED = ("nonperturbative", "failed", "unscanned")   # regions where λ_min is not drawn
@@ -265,9 +340,9 @@ def _extended(scan: ScanResult, limits: Limits) -> ScanResult:
                 continue
             edge = np.take(scan.status, -1 if at_end else 0, axis=a)
             if at_end:
-                st = np.where(np.isin(edge, ("stable", "g2_nonpert")), edge, "nonperturbative").astype(object)
+                st = np.where(np.isin(edge, STABLE_KEYS), edge, "nonperturbative").astype(object)
             else:
-                st = np.where(np.isin(edge, ("nonperturbative", "stable", "g2_nonpert")), edge,
+                st = np.where(np.isin(edge, ("nonperturbative", *STABLE_KEYS)), edge,
                               "unscanned").astype(object)
 
             def add(arr, new, a=a, at_end=at_end):
@@ -292,7 +367,7 @@ def _extended(scan: ScanResult, limits: Limits) -> ScanResult:
                 edges = add(edges, nan)
             ax_vals = np.concatenate([v, [value]] if at_end else [[value], v])
             # the minimum of λ carries over from the outermost line where it is shown
-            same = {k2: add(getattr(scan, k2), np.where(np.isin(st, ("stable", "g2_nonpert")),
+            same = {k2: add(getattr(scan, k2), np.where(np.isin(st, STABLE_KEYS),
                                                        np.take(getattr(scan, k2), -1 if at_end else 0, axis=a),
                                                        np.nan))
                     for k2 in ("lam_min", "mu_min", "lam_low") if getattr(scan, k2) is not None}
@@ -441,8 +516,9 @@ def _region_fields(scan: ScanResult, n: int = MAP_GRID) -> dict[str, np.ndarray]
     """
     present = {str(x) for x in scan.status.flat}
     keys: dict[str, str | frozenset] = {k: k for k in present}
-    if {"stable", "g2_nonpert"} <= present:      # both stable regions together (one green area)
-        keys[STABLE_ANY] = frozenset(("stable", "g2_nonpert"))
+    stable_present = present & set(STABLE_KEYS)
+    if len(stable_present) > 1:                  # the stable regions together (one green area)
+        keys[STABLE_ANY] = frozenset(stable_present)
     names = list(scan.axes)
     along = scan.edge_axis if scan.edge_axis in names else names[-1]
     main = _line_fields(scan, along, scan.edges, keys, n)
@@ -471,10 +547,245 @@ def _smooth_stable(fields: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     boundary moves by much less than a scan cell). Other regions are unchanged."""
     from scipy.ndimage import gaussian_filter
     out = dict(fields)
-    for key in ("stable", "g2_nonpert", STABLE_ANY):
+    for key in (*STABLE_KEYS, STABLE_ANY):
         if key in out and out[key].ndim == 2:
             out[key] = gaussian_filter(out[key], STABLE_SMOOTH, mode="nearest")
     return out
+
+
+def _lambda_boundary(fields: dict[str, np.ndarray], lamf: np.ndarray | None, cells: list[int],
+                     traced: np.ndarray | None = None) -> dict[str, np.ndarray]:
+    """Fields with the boundary between the unstable and the stable (green) regions placed
+    where the interpolated λ_min crosses zero (see _mu_I_field), so that it is the same smooth
+    curve the μ_I contours run into. λ_min varies smoothly across that boundary, unlike the
+    status, whose boundary is only known at bisected points and interpolated between them.
+
+    Only within NEAR_CELLS scan cells of that boundary; elsewhere (e.g. stable next to
+    non-perturbative) the fields are unchanged. λ_min / |∇λ_min| is used as the field, a
+    signed distance in the same units (axis lengths) as the other fields.
+
+    traced: the signed distance to the traced boundary (see _curve_distance; NaN away from it),
+    used instead where given: the boundary is then the traced curve itself.
+    """
+    if (lamf is None and traced is None) or "unstable" not in fields or fields["unstable"].ndim != 2:
+        return fields
+    stable = [k for k in (STABLE_ANY, *STABLE_KEYS) if k in fields]
+    if not stable:
+        return fields
+    d = _signed_distance(lamf) if lamf is not None else np.full(fields["unstable"].shape, np.nan)
+    if traced is not None:                        # > 0 on the stable side
+        d = np.where(np.isfinite(traced), traced, d)
+    c = NEAR_CELLS / max(min(cells) - 1, 1)
+    U = fields["unstable"]
+    out = dict(fields)
+    green = fields.get(STABLE_ANY, fields[stable[-1]])
+    near = np.isfinite(d) & (np.abs(U) < c) & (green > -c)
+    out["unstable"] = np.where(near, -d, U)
+    for k in stable:
+        F = fields[k]
+        if k == STABLE_ANY or len(stable) == 1:
+            out[k] = np.where(near, d, F)
+        else:   # one of several green regions: its boundary with the others stays as it was
+            out[k] = np.where(near, np.minimum(d, F), F)
+    return out
+
+
+NEAR_CELLS = 1.5                   # band around the stable boundary drawn from λ_min (scan cells)
+
+
+def _curves(scan: ScanResult, kind: str, level: float | None = None) -> list[Curve]:
+    """The traced curves of a scan of one kind (and level), if any."""
+    return [c for c in (scan.curves or []) if c.kind == kind and (level is None or c.level == level)
+            and len(c.y) > 1]
+
+
+def _curve_xy(scan: ScanResult, c: Curve) -> np.ndarray:
+    """Points of a traced curve in the data coordinates of the map (x, y)."""
+    nx, _ = scan.axes
+    return np.column_stack([c.M, c.y] if nx == "M" else [c.y, c.M])
+
+
+def _curve_distance(scan: ScanResult, curves: list[Curve], Xf: np.ndarray, Yf: np.ndarray,
+                    width: float) -> np.ndarray:
+    """Signed distance of the fine-grid points to the traced curves, in axis lengths (log
+    axes in log space, as the region fields), positive on the side where the curve's function
+    is above its level (Curve: on the right); NaN farther than width from every curve."""
+    nx, ny = scan.axes
+    xa, ya = scan.axes[nx], scan.axes[ny]
+
+    def norm(vals: np.ndarray, ax: np.ndarray, name: str) -> np.ndarray:
+        if name in LOG_AXES:
+            lo, hi = np.log10(ax[0]), np.log10(ax[-1])
+            with np.errstate(divide="ignore", invalid="ignore"):
+                return (np.log10(vals) - lo) / (hi - lo)
+        return (vals - ax[0]) / (ax[-1] - ax[0])
+
+    P = np.column_stack([norm(Xf.ravel(), xa, nx), norm(Yf.ravel(), ya, ny)])
+    best = np.full(len(P), np.inf)
+    sign = np.zeros(len(P))
+    # orientation: curves run with the side below their level on the left in the (M, y) plane
+    flip = -1.0 if nx == "M" else 1.0
+    for c in curves:
+        xy = _curve_xy(scan, c)
+        Q = np.column_stack([norm(xy[:, 0], xa, nx), norm(xy[:, 1], ya, ny)])
+        Q = Q[np.all(np.isfinite(Q), axis=1)]
+        if len(Q) < 2:
+            continue
+        lo_b, hi_b = Q.min(axis=0) - width, Q.max(axis=0) + width
+        cand = np.flatnonzero(np.all((P > lo_b) & (P < hi_b), axis=1))
+        if cand.size == 0:
+            continue
+        A, B = Q[:-1], Q[1:]
+        AB = B - A
+        L2 = np.maximum((AB ** 2).sum(axis=1), 1e-30)
+        for chunk in np.array_split(cand, max(1, cand.size // 4000)):
+            X = P[chunk][:, None, :]
+            t = np.clip(((X - A) * AB).sum(axis=2) / L2, 0, 1)
+            proj = A + t[..., None] * AB
+            dist = np.hypot(*(X - proj).transpose(2, 0, 1))
+            k = np.argmin(dist, axis=1)
+            dk = dist[np.arange(len(chunk)), k]
+            rel = P[chunk] - proj[np.arange(len(chunk)), k]
+            cross = AB[k, 0] * rel[:, 1] - AB[k, 1] * rel[:, 0]       # > 0: left of the curve
+            better = dk < best[chunk]
+            best[chunk[better]] = dk[better]
+            sign[chunk[better]] = np.where(cross[better] > 0, 1.0, -1.0) * flip
+    d = np.where(best <= width, sign * np.where(np.isfinite(best), best, 0.0), np.nan)
+    return d.reshape(Xf.shape)
+
+
+# font sizes of the maps (pt at MAP_SIZE; a map is usually shown at about half that width)
+TITLE_SIZE = 18                  # title (bold)
+MAP_TICK = 14                    # tick numbers
+MAP_AXIS_LABEL = 15              # axis labels
+NAME_SIZE = 16                   # region names (bold)
+NAME_SMALL = 12                  # ... where the region is too small for NAME_SIZE
+LINE_LABEL = 12                  # contour numbers and the labels of the SM and metastability lines
+CBAR_TICK, CBAR_LABEL = 14, 15   # the separate colour bar
+TITLE_ALPHA = 0.7                # opacity of the white box behind the title of a map
+MAP_SIZE = 6.0                   # side of the (square) figure of the 2D maps, inches
+MAP_AXES = (0.15, 0.12, 0.82, 0.82)   # its plot area (figure fraction): left, bottom, width, height
+
+
+def map_colorbar(path: Path, color_range: tuple[float, float]) -> None:
+    """Horizontal colour bar of log10 μ_I for the maps of a run (all drawn with color_range),
+    as a figure of its own to set above them in a LaTeX figure: same width as a map figure
+    (MAP_SIZE), with the bar exactly as wide and placed as their plot area (MAP_AXES), so that
+    with equal widths in LaTeX (e.g. both at \\linewidth) it lines up with the map below.
+    Ticks at every integer and the label above the bar."""
+    lo, hi = color_range
+    fig = plt.figure(figsize=(MAP_SIZE, CBAR_HEIGHT))
+    left, _, width, _ = MAP_AXES
+    cax = fig.add_axes((left, 0.12, width, 0.28))
+    sm = matplotlib.cm.ScalarMappable(norm=matplotlib.colors.Normalize(lo, hi), cmap=SEQ)
+    cb = fig.colorbar(sm, cax=cax, orientation="horizontal")
+    cb.locator = matplotlib.ticker.MultipleLocator(1)
+    cb.update_ticks()
+    cax.xaxis.set_ticks_position("top")
+    cax.xaxis.set_label_position("top")
+    cb.set_label(MU_I_LABEL, color=INK, fontsize=CBAR_LABEL)
+    cax.tick_params(colors=INK, labelsize=CBAR_TICK)
+    cb.outline.set_linewidth(0.6)
+    fig.savefig(path, dpi=PLOT_DPI)
+    plt.close(fig)
+
+
+CBAR_HEIGHT = 1.1                # height of the colour-bar figure, inches
+
+
+def map_legend(path: Path) -> None:
+    """Legend of the regions of the maps, as a figure of its own of the same size as the colour
+    bar of map_colorbar (MAP_SIZE x CBAR_HEIGHT), its rectangles spanning the same width and
+    height as the bar: to set above a map next to the colour bar in a LaTeX figure.
+
+    Left, under the title "Stability": the stable, metastable and unstable rectangles, filled with
+    the colour of the region (the green of the stable regions, and the yellow and red that shade
+    the metastable and unstable ones, opaque). Right, after a wider gap: the non-perturbative
+    rectangle, grey and hatched as that region in the maps. Each rectangle carries its name
+    inside, written as the region names in the maps (_write_name: bold, white halo), at
+    NAME_SIZE or smaller (down to NAME_SMALL) so that all names fit; the rectangles are as wide
+    as their names need, plus an equal share of the remaining width."""
+    fig = plt.figure(figsize=(MAP_SIZE, CBAR_HEIGHT))
+    left, _, width, _ = MAP_AXES
+    boxes = (("stable", STABLE_GREEN, None), ("metastable", META_YELLOW[:3], None),
+             ("unstable", UNSTABLE_RED[:3], None), ("non-perturbative", REGION, "///"))
+    gap, group_gap, pad = 0.025 * width, 0.08 * width, 0.03 * width   # figure fractions
+    avail = width - 2 * gap - group_gap
+    renderer = fig.canvas.get_renderer()
+
+    def text_width(text: str, size: float) -> float:
+        """Width of a name at this size, as a fraction of the figure width."""
+        t = fig.text(0, 0, text, fontsize=size, **BOLD)
+        w = t.get_window_extent(renderer).width / fig.bbox.width
+        t.remove()
+        return w
+
+    size = NAME_SIZE
+    while size > NAME_SMALL and sum(text_width(n, size) + 2 * pad for n, _, _ in boxes) > avail:
+        size -= 0.5
+    need = [text_width(n, size) + 2 * pad for n, _, _ in boxes]
+    extra = max(avail - sum(need), 0.0) / len(boxes)
+    x, xs = left, []
+    for i, ((name, colour, hatch), w) in enumerate(zip(boxes, need)):
+        w += extra
+        ax = fig.add_axes((x, 0.12, w, 0.28))
+        ax.set_facecolor(colour)
+        if hatch:
+            with matplotlib.rc_context({"hatch.color": HATCH, "hatch.linewidth": 0.8}):
+                ax.add_patch(Rectangle((0, 0), 1, 1, transform=ax.transAxes, facecolor=colour,
+                                       hatch=hatch, lw=0))
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for sp in ax.spines.values():
+            sp.set_linewidth(0.6)
+        _write_name(ax, 0.5, 0.5, name, size=size)          # as the region names in the maps
+        xs.append((x, x + w))
+        x += w + (group_gap if i == 2 else gap)
+    # title over the three stability rectangles, at the height and size of the label of the colour bar
+    fig.text((xs[0][0] + xs[2][1]) / 2, 0.66, "Stability", ha="center", va="bottom",
+             fontsize=CBAR_LABEL, color=INK)
+    fig.savefig(path, dpi=PLOT_DPI)
+    plt.close(fig)
+
+
+SM_DASH = (0, (6, 3))     # the contour μ_I = μ_I^SM
+SM_LINE_LW = 1.4
+SM_LINE_TEXT = r"$\log_{{10}} \mu_I^{{\mathrm{{SM}}}} = {sm:.1f}$"     # label of the SM contour
+
+
+def _sm_contour(ax, scan: ScanResult, Xf: np.ndarray, Yf: np.ndarray, Zf: np.ndarray,
+                sm: float | None, placed: list[np.ndarray]) -> bool:
+    """Dashed contour μ_I = μ_I^SM (sm: log10 of it), labelled on the line; traced if the scan
+    has it, else from the interpolated map (Zf, masked to where μ_I exists). True if drawn."""
+    from matplotlib.contour import ContourSet
+    if sm is None:
+        return False
+    traced = _curves(scan, "mu_I_sm")
+    if traced:
+        cs = ContourSet(ax, [sm], [[_curve_xy(scan, c) for c in traced]], colors=INK,
+                        linewidths=SM_LINE_LW, linestyles=[SM_DASH], zorder=2.2)  # type: ignore[list-item]
+    elif np.isfinite(Zf).any() and np.nanmin(Zf) < sm < np.nanmax(Zf):
+        # not traced (results from before it was): from the interpolated map
+        cs = ax.contour(Xf, Yf, Zf, levels=[sm], colors=INK, linewidths=SM_LINE_LW, linestyles=[SM_DASH])
+    else:
+        return False                   # the scan never reaches μ_I^SM
+    if not any(len(sg) > 1 for sg in cs.allsegs[0]):
+        return False
+    cs.set_path_effects([patheffects.withStroke(linewidth=SM_LINE_LW + 1.6, foreground="white", alpha=0.7)])
+    _label_line(ax, cs, SM_LINE_TEXT.format(sm=sm), placed)
+    return True
+
+
+def _traced_contours(ax, scan: ScanResult):
+    """The traced μ_I contours as a ContourSet (so that they are labelled like grid contours),
+    or None without them."""
+    from matplotlib.contour import ContourSet
+    curves = _curves(scan, "mu_I")
+    if not curves:
+        return None
+    levels = sorted({c.level for c in curves})
+    segs = [[_curve_xy(scan, c) for c in curves if c.level == lvl] for lvl in levels]
+    return ContourSet(ax, levels, segs, colors=INK, linewidths=CONTOUR_LW)
 
 
 def _fill_nan(Z: np.ndarray) -> np.ndarray:
@@ -496,7 +807,8 @@ def _fill_nan(Z: np.ndarray) -> np.ndarray:
 
 def plot_instability(path: Path, scan: ScanResult, overlay: ScanResult | None = None,
                      title: str | None = None, limits: Limits | None = None,
-                     minima: bool | str = False) -> None:
+                     minima: bool | str = False, y_label: str | None = None,
+                     color_range: tuple[float, float] | None = None) -> None:
     """μ_I against one parameter (curve) or two (colour map, M always on the x axis).
 
     limits: {axis name: (lowest, highest)} to show, e.g. {TR4: (1e-3, 1e3)}; other axes show
@@ -505,6 +817,8 @@ def plot_instability(path: Path, scan: ScanResult, overlay: ScanResult | None = 
     log10(μ_min/GeV), the scale of the minimum (cornflower blue): dashed contours over the map
     (2D), or a second panel (1D); or "lam": in 2D the metastable / unstable split of the
     unstable region at λ_min = META_LAMBDA (see _metastability_2d), in 1D λ_min itself.
+    y_label: label of the Tr[(YY†)²]^(1/4) axis of a map (model setting "y_label"; None: that name).
+    color_range: (lowest, highest) log10 μ_I of the colour map (None: the scan's own range).
     """
     what = "mu" if minima is True else (minima or None)
     limits = limits or {}
@@ -519,6 +833,9 @@ def plot_instability(path: Path, scan: ScanResult, overlay: ScanResult | None = 
         fig, (ax, ax_min) = plt.subplots(2, 1, figsize=(7.2, 7.2), sharex=True,
                                          gridspec_kw={"height_ratios": [1.6, 1]})
         _style(ax_min)
+    elif len(scan.axes) == 2:            # maps: square figure, square plot area at a fixed place
+        fig = plt.figure(figsize=(MAP_SIZE, MAP_SIZE))
+        ax = fig.add_axes(MAP_AXES)
     else:
         fig, ax = plt.subplots(figsize=(7.2, 5.2))
     _style(ax)
@@ -527,13 +844,15 @@ def plot_instability(path: Path, scan: ScanResult, overlay: ScanResult | None = 
         _instability_1d(ax, scan, overlay, sm, limits)
         if what:
             _minima_1d(ax_min, scan, what)
-    else:
-        _instability_2d(fig, ax, scan, overlay, sm, limits, what)
     fixed = ", ".join((f"$M$ = {v:.3g} GeV" if k == "M" else f"{pretty(k)} = {v:.3g}")
                       for k, v in scan.fixed.items())
-    ax.set_title((title or "Higgs instability scale") + (f"\n{fixed}" if fixed else ""),
-                 color=INK, fontsize=11, loc="left")
-    fig.tight_layout()
+    full_title = (title or "Higgs instability scale") + (f"\n{fixed}" if fixed else "")
+    if len(scan.axes) == 2:              # maps: the title in a box in the top left corner
+        _instability_2d(fig, ax, scan, overlay, sm, limits, what, y_label, color_range, full_title)
+    else:
+        ax.set_title(full_title, color=INK, fontsize=11, loc="left")
+    if len(scan.axes) != 2:              # maps keep MAP_AXES (lined up with map_colorbar)
+        fig.tight_layout()
     fig.savefig(path, dpi=PLOT_DPI)
     plt.close(fig)
 
@@ -586,7 +905,8 @@ def _minima_1d(ax, scan: ScanResult, what: str = "mu") -> None:
 
 
 def _instability_2d(fig, ax, scan: ScanResult, overlay: ScanResult | None, sm: float | None,
-                    limits: Limits, minima: str | None = None) -> None:
+                    limits: Limits, minima: str | None = None, y_label: str | None = None,
+                    color_range: tuple[float, float] | None = None, title: str | None = None) -> None:
     """Two scanned parameters: colour map of log10 μ_I (interpolated, with integer contours),
     PyR@TE contours if given, and hatched regions for stable / non-perturbative / failed points.
     With minima ("mu" or "lam"), dashed contours of the scale of the minimum of λ, or of its
@@ -611,55 +931,93 @@ def _instability_2d(fig, ax, scan: ScanResult, overlay: ScanResult | None, sm: f
     unstable = fields.get("unstable", np.full((MAP_GRID, MAP_GRID), -1.0))
     # smooth map: interpolate log10 μ_I on a fine grid (in log space for log axes), up to the
     # refined region boundaries
-    Xf, Yf, Zf = _refine(xa, ya, _fill_nan(Z), logx, logy)
+    green = next((fields[k] for k in (STABLE_ANY, *STABLE_KEYS) if k in fields), None)
+    Xf, Yf, Zf, below, lamf = _mu_I_field(scan, xa, ya, logx, logy, green)
+    bounds = _curves(scan, "lam_low", 0.0)
+    cell = NEAR_CELLS / max(min(len(xa), len(ya)) - 1, 1)
+    traced = _curve_distance(scan, bounds, Xf, Yf, 2 * cell) if bounds else None
+    fields = _lambda_boundary(fields, lamf, [len(xa), len(ya)], traced)
+    unstable = fields.get("unstable", unstable)
     # the colour map continues under the (opaque) status regions, so its edge is their smooth
     # boundary; contour lines stop at the boundary
-    pc = ax.pcolormesh(Xf, Yf, Zf, cmap=SEQ, shading="gouraud", rasterized=True)
-    Zf = np.where(unstable > 0, Zf, np.nan)
-    fig.colorbar(pc, ax=ax).set_label(MU_I_LABEL, color=INK)
+    # colours on a fixed range when given (shared by all maps of a run, see map_colorbar)
+    vmin, vmax = color_range if color_range is not None else (None, None)
+    ax.pcolormesh(Xf, Yf, Zf, cmap=SEQ, shading="gouraud", rasterized=True, vmin=vmin, vmax=vmax)
+    # lines where the point is unstable, and near the stable boundary up to it (the opaque
+    # status regions drawn on top hide what lies under them)
+    Zf = np.where((unstable > 0) | below, Zf, np.nan)
     labels_at: list[np.ndarray] = []           # label positions, shared with the μ_min contours
     finite = Z[np.isfinite(Z)]
     levels = (np.arange(np.floor(finite.min()), np.ceil(finite.max()) + 1, 1)
               if finite.size and np.ptp(finite) > 0.2 else None)
-    if levels is not None:
+    traced_cs = _traced_contours(ax, scan)
+    if traced_cs is not None:          # contours traced point by point (running/curves.py)
+        cs = traced_cs
+        levels = np.asarray(cs.levels)
+        cs.set_path_effects([patheffects.withStroke(linewidth=1.8, foreground="white", alpha=0.5)])
+        _label_contours(ax, cs, placed=labels_at)
+    elif levels is not None:
         cs = ax.contour(Xf, Yf, Zf, levels=levels, colors=INK, linewidths=CONTOUR_LW)
         # light halo around the lines, so they are visible on the dark end of the map
         cs.set_path_effects([patheffects.withStroke(linewidth=1.8, foreground="white", alpha=0.5)])
         _label_contours(ax, cs, placed=labels_at)
+    names: list = []                           # region names: written last, clear of all lines
+    handles = _status_regions(ax, fields, Xf, Yf, overlap=0.5 / MAP_GRID, placed=labels_at, names=names)
+    # the opaque regions: what they hide does not block labels, and labels set apart with a
+    # pointer are not put on them (that room is for their own names)
+    shaded = [fields[k] > 0 for k, *_ in SHADED if k in fields] + \
+        ([fields[STABLE_ANY] > 0] if STABLE_ANY in fields else [])
+    ax._hf_cover = _raster(ax, Xf, Yf, np.logical_or.reduce(shaded)) if shaded else None
+    sm_line = _sm_contour(ax, scan, Xf, Yf, Zf, sm, labels_at)
     if overlay is not None:
         Zo = np.log10(overlay.mu_I)
         if np.isfinite(Zo).sum() > 3:
-            _, _, Zof = _refine(xa, ya, _fill_nan(Zo), logx, logy)
-            Zof = np.where(unstable > 0, Zof, np.nan)
+            _, _, Zof, below_o, _ = _mu_I_field(overlay, xa, ya, logx, logy, green)
+            Zof = np.where((unstable > 0) | below_o, Zof, np.nan)
             ax.contour(Xf, Yf, Zof, levels=levels if levels is not None else 5,
                        colors=SERIES[1], linewidths=0.8, linestyles="--")
-    handles = _status_regions(ax, fields, Xf, Yf, overlap=0.5 / MAP_GRID)
     if minima:
         if levels is not None and minima != "lam":
             handles.append(plt.Line2D([], [], color=INK, lw=CONTOUR_LW,
                                       label=MU_I_LABEL + ": instability scale"))
         if minima == "lam":
-            handles += _metastability_2d(ax, scan, Xf, Yf, logx, logy, fields)
+            handles += _metastability_2d(ax, scan, Xf, Yf, logx, logy, fields, labels_at, names)
         else:
             handles += _minima_2d(ax, scan, Xf, Yf, logx, logy, labels_at, fields, minima)
     if overlay is not None:
         handles.append(plt.Line2D([], [], color=SERIES[1], ls="--", label="PyR@TE betas"))
     if sm is not None:
-        text = rf"SM: $\mu_I=10^{{{sm:.2f}}}$ GeV"
-        if minima == "mu" and scan.sm_mu_min is not None:          # both SM scales on one line
-            text += rf", $\mu_{{\min}}=10^{{{np.log10(scan.sm_mu_min):.2f}}}$ GeV"
+        # with the dashed μ_I = μ_I^SM contour drawn (labelled in the plot), only the other SM
+        # numbers are listed
+        parts = [] if sm_line else [rf"$\mu_I=10^{{{sm:.2f}}}$ GeV"]
+        if minima == "mu" and scan.sm_mu_min is not None:
+            parts.append(rf"$\mu_{{\min}}=10^{{{np.log10(scan.sm_mu_min):.2f}}}$ GeV")
         if minima == "lam" and scan.sm_lam_min is not None:
-            text += rf", $\lambda_{{\min}}={scan.sm_lam_min:.4f}$"
-        handles.append(plt.Line2D([], [], color="none", label=text))
-    if handles:
-        ax.legend(handles=handles, fontsize=8, loc="best", **LEGEND_BOX)
-    ax.set_xlabel(pretty(nx), color=INK)
-    ax.set_ylabel(pretty(ny), color=INK)
+            parts.append(rf"$\lambda_{{\min}}={scan.sm_lam_min:.4f}$")
+        if parts:
+            handles.append(plt.Line2D([], [], color="none", label="SM: " + ", ".join(parts)))
+    if title:                                  # framed, semi-transparent, in the top left corner; bold
+        bold = re.sub(r"\$(.+?)\$", lambda m: r"$\mathbf{" + m.group(1) + "}$", title)
+        ax.text(0.02, 0.98, bold, transform=ax.transAxes, ha="left", va="top", fontsize=TITLE_SIZE,
+                color=INK, zorder=8, **BOLD,
+                bbox={"boxstyle": "square,pad=0.35", "facecolor": (1, 1, 1, TITLE_ALPHA),
+                      "edgecolor": INK, "linewidth": 0.6})
+    # last: they keep clear of every line and label; first every name that fits in its region,
+    # then the others with a pointer (so that a pointer's text does not take a region's room)
+    later = [n for n in names
+             if not _region_text(ax, Xf, Yf, n[0], n[1], left=n[2], bottom=n[3], placed=labels_at, pointer=False)]
+    for mask, text, left, bottom in later:
+        _region_text(ax, Xf, Yf, mask, text, left=left, bottom=bottom, placed=labels_at)
+    # no legend on the maps: lines and regions are named in the plot itself
+    ax.set_xlabel(pretty(nx), color=INK, fontsize=MAP_AXIS_LABEL)
+    ax.set_ylabel(y_label if (ny == TR4R and y_label) else pretty(ny), color=INK, fontsize=MAP_AXIS_LABEL)
+    ax.tick_params(labelsize=MAP_TICK)
     ax.grid(visible=False, which="both")   # no grid on top of a colour map
 
 
 def _metastability_2d(ax, scan: ScanResult, Xf: np.ndarray, Yf: np.ndarray, logx: bool, logy: bool,
-                      fields: dict[str, np.ndarray]) -> list:
+                      fields: dict[str, np.ndarray], placed: list[np.ndarray] | None = None,
+                      names: list | None = None) -> list:
     """Metastability over the map: inside the unstable region, the contour of the lowest λ
     along the running (λ_min, or λ where the running stops if it is still decreasing) at
     META_LAMBDA; above it (shallower) the region is shaded yellow and reads "metastable", below
@@ -668,9 +1026,15 @@ def _metastability_2d(ax, scan: ScanResult, Xf: np.ndarray, Yf: np.ndarray, logx
     nx, ny = scan.axes
     unst = fields.get("unstable")
     if scan.lam_low is None or unst is None or not (unst > 0).any():
-        _region_text(ax, Xf, Yf, _stable_mask(fields), "stable")
         return []
-    V = np.where(scan.status == "unstable", np.asarray(scan.lam_low, dtype=float), np.nan).astype(float)
+    # the λ compared with META_LAMBDA: runs cut short with λ still falling count as unstable
+    # (meta_value); μ_max is where the stable runs end
+    lam_min = scan.lam_min if scan.lam_min is not None else np.full(scan.status.shape, np.nan)
+    with np.errstate(invalid="ignore"):
+        mu_max = float(np.nanmax(np.where(scan.status == "stable", scan.mu_stop, np.nan))) \
+            if (scan.status == "stable").any() else float(np.nanmax(scan.mu_stop))
+    V = np.where(scan.status == "unstable", meta_value(scan.lam_low, lam_min, scan.mu_stop, mu_max),
+                 np.nan).astype(float)
     if not np.isfinite(V).any():
         return []
     _, _, Vf = _refine(scan.axes[nx], scan.axes[ny], _fill_nan(V), logx, logy)
@@ -678,40 +1042,239 @@ def _metastability_2d(ax, scan: ScanResult, Xf: np.ndarray, Yf: np.ndarray, logx
     region = ax.contourf(Xf, Yf, unst, levels=[0.0, float(unst.max()) + 1.0], colors="none")
     clip = PathPatch(region.get_paths()[0], transform=ax.transData)
     region.remove()
+    metas = _curves(scan, "lam_low", META_LAMBDA)
+    if metas:       # only pieces along which the map really changes there (older results also
+                    # traced one along the edge of the non-perturbative region)
+        fV = _fine_lookup(scan, Xf, Yf, Vf)
+        metas = [c for c in metas if np.nanmedian(np.abs(fV(_curve_xy(scan, c)) - META_LAMBDA)) < 0.03]
+    if metas:       # near the traced line, the shading follows it exactly
+        cell = NEAR_CELLS / max(min(len(scan.axes[nx]), len(scan.axes[ny])) - 1, 1)
+        dm = _curve_distance(scan, metas, Xf, Yf, cell)
+        gx, gy = np.gradient(Vf, 1.0 / (Vf.shape[0] - 1), 1.0 / (Vf.shape[1] - 1))
+        slope = np.nan_to_num(np.hypot(gx, gy), nan=1.0) + 1e-12
+        Vf = np.where(np.isfinite(dm), META_LAMBDA + dm * slope, Vf)
     lo, hi = float(np.nanmin(Vf)), float(np.nanmax(Vf))
     shade = ax.contourf(Xf, Yf, Vf, levels=[min(lo, META_LAMBDA) - 1, META_LAMBDA, max(hi, META_LAMBDA) + 1],
                         colors=[UNSTABLE_RED, META_YELLOW], zorder=2.4, antialiased=True)
     shade.set_clip_path(clip)
-    line = ax.contour(Xf, Yf, np.where(unst > -3.0 / MAP_GRID, Vf, np.nan), levels=[META_LAMBDA],
-                      colors=META_LINE, linewidths=2 * CONTOUR_LW, linestyles=[MIN_DASH], zorder=3)
+    if metas:
+        from matplotlib.contour import ContourSet
+        line = ContourSet(ax, [META_LAMBDA], [[_curve_xy(scan, c) for c in metas]], colors=META_LINE,
+                          linewidths=2 * CONTOUR_LW, linestyles=[MIN_DASH], zorder=3)  # type: ignore[list-item]
+    else:
+        line = ax.contour(Xf, Yf, np.where(unst > -3.0 / MAP_GRID, Vf, np.nan), levels=[META_LAMBDA],
+                          colors=META_LINE, linewidths=2 * CONTOUR_LW, linestyles=[MIN_DASH], zorder=3)
     line.set_path_effects([patheffects.withStroke(linewidth=2.4, foreground="white", alpha=0.6)])
     line.set_clip_path(clip)
     inside = unst > 0
-    _region_text(ax, Xf, Yf, inside & (Vf >= META_LAMBDA), "metastable")
-    _region_text(ax, Xf, Yf, inside & (Vf < META_LAMBDA), "unstable")
-    _region_text(ax, Xf, Yf, _stable_mask(fields), "stable")
-    return [Patch(facecolor=META_YELLOW, label=rf"metastable: $\lambda_{{\min}} \geq {META_LAMBDA:g}$"),
-            Patch(facecolor=UNSTABLE_RED, label=rf"unstable: $\lambda_{{\min}} < {META_LAMBDA:g}$")]
+    placed = placed if placed is not None else []
+    if any(len(sg) > 1 for sg in line.allsegs[0]):      # the line names its level
+        _label_line(ax, line, rf"$\lambda(\mu_*) < {META_LAMBDA:g}$", placed, box=META_LABEL_BOX)
+    _region_text(ax, Xf, Yf, inside & (Vf >= META_LAMBDA), "metastable", placed=placed, names=names)
+    _region_text(ax, Xf, Yf, inside & (Vf < META_LAMBDA), "unstable", placed=placed, names=names)
+    return []
+
+
+def _fine_lookup(scan: ScanResult, Xf: np.ndarray, Yf: np.ndarray, V: np.ndarray):
+    """Function giving V (on the fine grid) at data points (x, y), from the nearest grid point."""
+    nx, ny = scan.axes
+    lx, ly = nx in LOG_AXES, ny in LOG_AXES
+    gx = np.log10(Xf) if lx else Xf
+    gy = np.log10(Yf) if ly else Yf
+    xs, ys = np.unique(gx), np.unique(gy)
+    x_along_1 = Xf.shape[1] > 1 and Xf[0, 1] != Xf[0, 0]
+
+    def look(xy: np.ndarray) -> np.ndarray:
+        px = np.log10(xy[:, 0]) if lx else xy[:, 0]
+        py = np.log10(xy[:, 1]) if ly else xy[:, 1]
+        i = np.clip(np.searchsorted(xs, px), 0, len(xs) - 1)
+        j = np.clip(np.searchsorted(ys, py), 0, len(ys) - 1)
+        return V[j, i] if x_along_1 else V[i, j]
+    return look
 
 
 def _stable_mask(fields: dict[str, np.ndarray]) -> np.ndarray | None:
     """Where the map is stable (either stable region): no instability scale."""
-    masks = [fields[k] > 0 for k in ("stable", "g2_nonpert", STABLE_ANY) if k in fields]
+    masks = [fields[k] > 0 for k in (*STABLE_KEYS, STABLE_ANY) if k in fields]
     return np.logical_or.reduce(masks) if masks else None
 
 
-def _region_text(ax, Xf: np.ndarray, Yf: np.ndarray, mask: np.ndarray | None, text: str,
-                 min_share: float = 0.01) -> None:
-    """Write text inside a region of the fine grid, at the point farthest from its edges
-    (skipped if the region covers less than min_share of the map)."""
-    if mask is None or mask.mean() < min_share:
-        return
-    from scipy.ndimage import distance_transform_edt
-    d = distance_transform_edt(np.pad(mask, 1))[1:-1, 1:-1]
-    i, j = np.unravel_index(int(np.argmax(d)), d.shape)
-    t = ax.text(Xf[i, j], Yf[i, j], text, ha="center", va="center", fontsize=11, fontweight="bold",
-                color=INK, zorder=6)
+RASTER = 320                  # name placement: the frame as a RASTER x RASTER grid (axes fraction)
+
+
+def _raster(ax, Xf: np.ndarray, Yf: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """A fine-grid mask on the placement raster [row = y, column = x] (nearest grid point)."""
+    pos = (ax.transData + ax.transAxes.inverted()).transform(np.column_stack([Xf.ravel(), Yf.ravel()]))
+    pos = pos.reshape(*Xf.shape, 2)
+    x_along_1 = Xf.shape[1] > 1 and Xf[0, 1] != Xf[0, 0]
+    M = mask if x_along_1 else mask.T
+    P = pos if x_along_1 else pos.transpose(1, 0, 2)
+    ux, vy = P[0, :, 0], P[:, 0, 1]
+    c = (np.arange(RASTER) + 0.5) / RASTER
+    ix = np.clip(np.searchsorted(ux, c), 0, len(ux) - 1)
+    iy = np.clip(np.searchsorted(vy, c), 0, len(vy) - 1)
+    return M[np.ix_(iy, ix)]
+
+
+def _busy(ax) -> np.ndarray:
+    """Placement raster of what labels must not cover: the drawn lines (contours, the SM and
+    metastability lines) and the texts already written."""
+    from matplotlib.collections import QuadMesh
+    from matplotlib.contour import ContourSet
+    from scipy.ndimage import binary_dilation
+    busy = np.zeros((RASTER, RASTER), bool)
+    to_axes = ax.transAxes.inverted().transform
+
+    def mark(pts: np.ndarray) -> None:
+        if len(pts) < 2:
+            return
+        seg = np.diff(pts, axis=0)
+        n = np.maximum(1, (np.hypot(*seg.T) * RASTER * 2).astype(int))
+        dense = np.concatenate([pts[k] + np.outer(np.linspace(0, 1, n[k], endpoint=False), seg[k])
+                                for k in range(len(seg))] + [pts[-1:]])
+        ok = np.all((dense >= 0) & (dense < 1), axis=1)
+        idx = (dense[ok] * RASTER).astype(int)
+        busy[idx[:, 1], idx[:, 0]] = True
+
+    for art in list(ax.collections) + list(ax.lines):
+        if isinstance(art, QuadMesh) or (isinstance(art, ContourSet) and art.filled) or not art.get_visible():
+            continue
+        tr = art.get_transform()
+        paths = art.get_paths() if hasattr(art, "get_paths") else [art.get_path()]
+        for path in paths:
+            for poly in path.to_polygons(closed_only=False):
+                if len(poly):
+                    mark(to_axes(tr.transform(poly)))
+    busy = binary_dilation(busy, iterations=2)
+    cover = getattr(ax, "_hf_cover", None)       # lines under the opaque regions are not seen
+    if cover is not None:
+        busy &= ~cover
+    rend = ax.figure.canvas.get_renderer()
+    frame = ax.get_window_extent(rend)
+    for t in ax.texts:
+        if not t.get_visible() or not t.get_text():
+            continue
+        bb = t.get_window_extent(rend)
+        x0, x1 = (bb.x0 - frame.x0) / frame.width, (bb.x1 - frame.x0) / frame.width
+        y0, y1 = (bb.y0 - frame.y0) / frame.height, (bb.y1 - frame.y0) / frame.height
+        c0, c1 = max(int(x0 * RASTER) - 2, 0), min(int(x1 * RASTER) + 3, RASTER)
+        r0, r1 = max(int(y0 * RASTER) - 2, 0), min(int(y1 * RASTER) + 3, RASTER)
+        busy[r0:r1, c0:c1] = True
+    return busy
+
+
+def _text_cells(ax, text: str, fontsize: float, bold: bool) -> tuple[int, int]:
+    """Size (rows, columns) of a text on the placement raster, with a small margin."""
+    probe = ax.text(0.5, 0.5, text, transform=ax.transAxes, fontsize=fontsize, **(BOLD if bold else {}))
+    rend = ax.figure.canvas.get_renderer()
+    bb, frame = probe.get_window_extent(rend), ax.get_window_extent(rend)
+    probe.remove()
+    return (int(np.ceil(bb.height / frame.height * RASTER)) + 4,
+            int(np.ceil(bb.width / frame.width * RASTER)) + 6)
+
+
+def _free_boxes(ok: np.ndarray, rows: int, cols: int) -> np.ndarray:
+    """Share of each raster cell's text box (centred on it) where ok holds; 0 where the box
+    would leave the frame."""
+    from scipy.ndimage import uniform_filter
+    share = uniform_filter(ok.astype(float), size=(rows, cols), mode="constant", cval=0.0)
+    edge = np.zeros_like(share, dtype=bool)
+    edge[rows // 2 + 1: RASTER - rows // 2 - 1, cols // 2 + 1: RASTER - cols // 2 - 1] = True
+    return np.where(edge, share, 0.0)
+
+
+NAME_INSIDE = 0.8             # share of a region name's box that must lie inside its region
+
+
+def _write_name(ax, x: float, y: float, text: str, ha: str = "center", size: float = NAME_SIZE) -> None:
+    t = ax.text(x, y, text, transform=ax.transAxes, ha=ha, va="center", fontsize=size, color=INK, zorder=6,
+                **BOLD)
     t.set_path_effects([patheffects.withStroke(linewidth=2.5, foreground="white", alpha=0.8)])
+
+
+def _region_text(ax, Xf: np.ndarray, Yf: np.ndarray, mask: np.ndarray | None, text: str,
+                 min_share: float = 0.002, left: bool = False,
+                 placed: list[np.ndarray] | None = None, bottom: bool = False,
+                 names: list | None = None, pointer: bool = True) -> bool:
+    """Write a region's name inside it, in a spot where the whole name lies in the region and
+    covers no line or other text: the deepest such spot (left: the rightmost, right-aligned and
+    as low as possible, i.e. just above the region's lower boundary (the non-perturbative strip);
+    bottom: the lowest, just above the lower edge, centred on the region's stretch there).
+    If there is no such spot, the name goes nearby with a pointer (_annotate_near).
+    With names (a list), the request is only recorded there, to be written once all lines are
+    drawn (see _instability_2d)."""
+    if mask is None or not mask.any() or mask.mean() < min_share:
+        return True
+    if names is not None:
+        names.append((mask, text, left, bottom))
+        return True
+    from scipy.ndimage import distance_transform_edt
+    region = _raster(ax, Xf, Yf, mask)
+    if not region.any():
+        return True
+    depth = distance_transform_edt(np.pad(region, 1))[1:-1, 1:-1]
+    free = ~_busy(ax)
+    for size in (NAME_SIZE, NAME_SMALL):       # a smaller font before resorting to a pointer
+        rows, cols = _text_cells(ax, text, size, True)
+        # room: nothing drawn under the name, and most of it (NAME_INSIDE) inside the region
+        fits = (_free_boxes(free, rows, cols) >= 0.999) & (_free_boxes(region, rows, cols) >= NAME_INSIDE)
+        if not fits.any():
+            continue
+        r, c = np.argwhere(fits).T
+        if bottom:                       # lowest spots, then the middle of the region there
+            low = r <= r.min() + 2
+            cols_low = np.flatnonzero(region[r.min()])
+            mid = 0.5 * (cols_low.min() + cols_low.max()) if cols_low.size else c[low].mean()
+            k = np.flatnonzero(low)[np.argmin(np.abs(c[low] - mid))]
+        elif left:                       # "edge" mode: rightmost spots, the lowest of them, i.e.
+            rgt = c >= c.max() - 2           # right-aligned just above the region's lower boundary
+            k = np.flatnonzero(rgt)[np.argmin(r[rgt])]
+            x = (c[k] + cols // 2 - 3 + 0.5) / RASTER
+            _write_name(ax, x, (r[k] + 0.5) / RASTER, text, ha="right", size=size)
+            return True
+        else:
+            k = int(np.argmax(depth[r, c]))
+        _write_name(ax, (c[k] + 0.5) / RASTER, (r[k] + 0.5) / RASTER, text, size=size)
+        return True
+    if not pointer:                      # no room inside: the caller retries with a pointer later
+        return False
+    i, j = np.unravel_index(int(np.argmax(depth)), depth.shape)
+    _annotate_near(ax, np.array([(j + 0.5) / RASTER, (i + 0.5) / RASTER]), text, placed,
+                   fontsize=NAME_SIZE, bold=True)
+    return True
+
+
+
+
+def _annotate_near(ax, target: np.ndarray, text: str, placed: list[np.ndarray] | None,
+                   fontsize: float = LINE_LABEL, bold: bool = False, box: tuple | None = None) -> None:
+    """Label with a pointer: the text in the nearest spot around target (axes fraction) where
+    it covers no line or other text (rings of growing radius), with a thin line to target."""
+    rows, cols = _text_cells(ax, text, fontsize, bold)
+    cover = getattr(ax, "_hf_cover", None)
+    share = _free_boxes(~_busy(ax) & (~cover if cover is not None else True), rows, cols)
+    best, best_share = None, -1.0
+    for rad in (0.08, 0.11, 0.15, 0.2, 0.26, 0.33, 0.42):
+        for ang in np.radians(np.arange(0, 360, 15)):
+            c = target + rad * np.array([np.cos(ang), np.sin(ang)])
+            if not (0 < c[0] < 1 and 0 < c[1] < 1):
+                continue
+            sh = share[int(c[1] * RASTER), int(c[0] * RASTER)]
+            if sh > best_share + 1e-9:
+                best, best_share = c, sh
+        if best_share >= 0.999:
+            break
+    if best is None:
+        return
+    a = ax.annotate(text, xy=tuple(target), xycoords="axes fraction", xytext=tuple(best),
+                    textcoords="axes fraction", ha="center", va="center", fontsize=fontsize,
+                    color=INK, zorder=7, **(BOLD if bold else {}),
+                    arrowprops={"arrowstyle": "-", "color": INK, "lw": 0.7, "shrinkA": 3, "shrinkB": 0})
+    a.set_path_effects([patheffects.withStroke(linewidth=2.5, foreground="white", alpha=0.8)])
+    if box is not None:
+        a.set_bbox({"boxstyle": "square,pad=0.25", "facecolor": box, "edgecolor": "none"})
+    if placed is not None:
+        placed.append(np.asarray(best))
 
 
 def _lam_levels(lo: float, hi: float) -> np.ndarray:
@@ -785,7 +1348,7 @@ def _minima_2d(ax, scan: ScanResult, Xf: np.ndarray, Yf: np.ndarray, logx: bool,
     # is the wide dashed line), instead of being cut along the cells of the fine grid
     # not in the stable (green) regions either: there λ has a positive minimum, not shown
     drawn = shown.copy()
-    for key in ("stable", "g2_nonpert", STABLE_ANY):
+    for key in (*STABLE_KEYS, STABLE_ANY):
         if status_fields is not None and key in status_fields:
             drawn &= status_fields[key] <= 0
     inside = np.where(drawn, F, -1.0)
@@ -837,7 +1400,51 @@ def _minima_2d(ax, scan: ScanResult, Xf: np.ndarray, Yf: np.ndarray, logx: bool,
     return handles
 
 
-LABEL_BOX = (0.075, 0.05)        # half-free zone around a contour label (axes fraction): width, height
+LABEL_BOX = (0.1, 0.053)        # half-free zone around a contour label (axes fraction): width, height
+
+
+def _label_line(ax, cs, text: str, placed: list[np.ndarray], box: tuple | None = None) -> None:
+    """Label a single-level line (the SM contour, the metastability line) with a longer text:
+    where it crosses x = 0.8, 0.7, 0.9, 0.6 or 0.5 of the frame (right of the column of the μ_I
+    labels) clear of the labels already placed, else at the best spot along the line. box: face
+    colour (RGBA) of a rectangle behind the text (which keeps its white halo)."""
+    to_axes = (ax.transData + ax.transAxes.inverted()).transform
+    to_data = (ax.transAxes + ax.transData.inverted()).transform
+    segs = [to_axes(sg) for sg in cs.allsegs[0] if len(sg) > 1]
+    if not segs:
+        return
+    spot = None
+    for xc in (0.8, 0.7, 0.9, 0.6, 0.5):
+        for pts in segs:
+            dx = pts[:, 0] - xc
+            for i in np.flatnonzero(dx[:-1] * dx[1:] <= 0):
+                if dx[i] == dx[i + 1]:
+                    continue
+                p = pts[i] + dx[i] / (dx[i] - dx[i + 1]) * (pts[i + 1] - pts[i])
+                if 0.06 < p[1] < 0.94 and _gap(p, placed) > LONG_LABEL:
+                    spot = p
+                    break
+            if spot is not None:
+                break
+        if spot is not None:
+            break
+    if spot is None:                     # no clear spot on the line: label nearby, with a pointer
+        target = _label_on_line(segs, [], 0.06)
+        if target is not None:
+            _annotate_near(ax, target, text, placed, box=box)
+        return
+    placed.append(spot)
+    texts = ax.clabel(cs, levels=list(cs.levels), manual=[tuple(to_data(spot[None, :])[0])],
+                      fmt={cs.levels[0]: text}, fontsize=LINE_LABEL, inline=True,
+                      inline_spacing=6)
+    for t in texts:
+        t.set_color(INK)
+        t.set_path_effects([patheffects.withStroke(linewidth=2.5, foreground="white")])
+        if box is not None:
+            t.set_bbox({"boxstyle": "square,pad=0.25", "facecolor": box, "edgecolor": "none"})
+
+
+LONG_LABEL = 2.2        # _label_line: clearance from other labels, in units of LABEL_BOX
 
 
 def _gap(p: np.ndarray, placed: list[np.ndarray]) -> float:
@@ -846,7 +1453,7 @@ def _gap(p: np.ndarray, placed: list[np.ndarray]) -> float:
     return min((max(abs(p[0] - q[0]) / w, abs(p[1] - q[1]) / h) for q in placed), default=np.inf)
 
 
-def _label_contours(ax, cs, margin: float = 0.04, fmt: str = "%d",
+def _label_contours(ax, cs, margin: float = 0.04, fmt: str | dict = "%d",
                     colour: str = INK, placed: list[np.ndarray] | None = None) -> None:
     """Readable contour labels: one for every level, lined up and without overlaps.
 
@@ -889,22 +1496,54 @@ def _label_contours(ax, cs, margin: float = 0.04, fmt: str = "%d",
                 spots.append((lvl, best[1]))
         return spots
 
-    columns = [column(xc) for xc in np.linspace(0.1, 0.9, 33)]
+    xcs = np.linspace(0.1, 0.9, 33)
+    columns = [column(xc) for xc in xcs]
     # most levels; among equals the column nearest the middle
     best_col = max(range(len(columns)), key=lambda k: (len(columns[k]), -abs(k - len(columns) // 2)))
     spots = dict((lvl, p) for lvl, p in columns[best_col])
+    taken = list(placed) + list(spots.values())
+
+    def near_column(segs: list[np.ndarray]) -> np.ndarray | None:
+        """A spot on the line as close as possible to the chosen column (left or right of it,
+        up to 0.2 of the frame), clear of the other labels: the labels stay lined up."""
+        for off in (0.03, -0.03, 0.06, -0.06, 0.1, -0.1, 0.15, -0.15, 0.2, -0.2):
+            xc = xcs[best_col] + off
+            if not 0.05 < xc < 0.95:
+                continue
+            for pts in segs:
+                dx = pts[:, 0] - xc
+                for i in np.flatnonzero(dx[:-1] * dx[1:] <= 0):
+                    if dx[i] == dx[i + 1]:
+                        continue
+                    p = pts[i] + dx[i] / (dx[i] - dx[i + 1]) * (pts[i + 1] - pts[i])
+                    if margin < p[1] < 1 - margin and _gap(p, taken) > 1:
+                        return p
+        return None
+
     positions, levels = [], []
+    pointers: list[tuple[float, np.ndarray]] = []
     for lvl, segs in lines:
         p = spots.get(lvl)
         if p is None:
+            p = near_column(segs)
+            if p is not None:
+                taken.append(p)
+        if p is None:
             p = _label_on_line(segs, placed, margin)
+            if p is not None and _gap(p, placed) <= 1:      # no room on the line: with a pointer
+                pointers.append((lvl, p))
+                continue
         if p is not None:
             placed.append(p)
             positions.append(tuple(to_data(p[None, :])[0]))
             levels.append(lvl)
+    for lvl, p in pointers:
+        txt = fmt.get(lvl, f"{lvl:g}") if isinstance(fmt, dict) else fmt % lvl
+        _annotate_near(ax, p, txt, placed)
     if not positions:
         return
-    texts = ax.clabel(cs, levels=levels, manual=positions, fmt=fmt, fontsize=9, inline=True, inline_spacing=6)
+    texts = ax.clabel(cs, levels=levels, manual=positions, fmt=fmt, fontsize=LINE_LABEL, inline=True,
+                      inline_spacing=6)
     for t in texts:
         t.set_color(colour)
         t.set_path_effects([patheffects.withStroke(linewidth=2.5, foreground="white")])
@@ -931,7 +1570,8 @@ def _label_on_line(segs: list[np.ndarray], placed: list[np.ndarray], margin: flo
 
 
 def _status_regions(ax, fields: dict[str, np.ndarray], Xf: np.ndarray, Yf: np.ndarray,
-                    overlap: float = 0.0) -> list:
+                    overlap: float = 0.0, placed: list[np.ndarray] | None = None,
+                    names: list | None = None) -> list:
     """Regions where the scan is stable (green) or non-perturbative / failed / unscanned
     (grey, hatched); returns their legend handles.
 
@@ -939,13 +1579,18 @@ def _status_regions(ax, fields: dict[str, np.ndarray], Xf: np.ndarray, Yf: np.nd
     drawn on top of the colour map (which continues underneath), from -overlap, so that its
     smooth boundary is the edge of the map: no gaps or steps from the fine grid.
     """
-    handles = []
+    handles: list = []                         # regions are named in the plot, not in the legend
     for key, hatch, lab, colour in SHADED:
         F = fields.get(key)
         if F is None or not (F > 0).any():
             continue
+        own = F > 0                            # the region itself (where its name is written)
+        if key == "stable":                    # not under the gauge non-perturbative regions on top
+            for g in GAUGE_NONPERT:
+                if g in fields:
+                    own &= ~(fields[g] > 0)
         if key == "stable" and STABLE_ANY in fields:
-            # one green area for both stable regions (the g₂ non-perturbative one is hatched on top),
+            # one green area for all stable regions (the gauge non-perturbative ones are hatched on top),
             # so that no strip of the colour map shows between them
             F = fields[STABLE_ANY]
         top = float(F.max()) + 1.0
@@ -953,7 +1598,10 @@ def _status_regions(ax, fields: dict[str, np.ndarray], Xf: np.ndarray, Yf: np.nd
         with matplotlib.rc_context({"hatch.color": HATCH, "hatch.linewidth": 0.8}):
             ax.contourf(Xf, Yf, F, levels=[-overlap, top], colors=[face], hatches=[hatch], zorder=2.5,
                         antialiased=True)
-        handles.append(Patch(facecolor=face, edgecolor=HATCH, lw=0, hatch=hatch, label=lab))
+        # the non-perturbative strip along the top: its name at the right, just above its lower
+        # boundary; stable: along the bottom
+        _region_text(ax, Xf, Yf, own, lab, left=key == "nonperturbative", placed=placed,
+                     bottom=key == "stable", names=names)
     return handles
 
 
@@ -1000,7 +1648,8 @@ def plot_traces(path: Path, res: SampleResult, title: str | None = None) -> None
     handles = []
     for key, marker, lab in (("nonperturbative", "^", "non-perturbative before $\\mu_I$"),
                              ("stable", "o", "stable up to $M_{Pl}$"),
-                             ("g2_nonpert", "s", "$g_2$ non-perturbative"), ("failed", "x", "integration failed")):
+                             *((k, STATUS_MARKER[k], STATUS_TEXT[k]) for k in GAUGE_NONPERT),
+                             ("failed", "x", "integration failed")):
         sel = ok & (res.status == key)
         if sel.any():
             ax.scatter(res.tr2[sel], res.tr4[sel] ** 0.25, marker=marker, s=12, color=NEUTRAL,

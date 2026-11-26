@@ -20,7 +20,20 @@ from itertools import product
 import numpy as np
 
 from .boundary import SMInputs
-from .solver import Runner, RunnerSpec
+from .curves import (
+    META_LAMBDA,
+    VALID,
+    Curve,
+    TraceTask,
+    join_ends,
+    meta_value,
+    mu_levels,
+    same_curve,
+    scaled_grid,
+    seeds,
+    trace,
+)
+from .solver import GAUGE_NONPERT, Runner, RunnerSpec
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +70,9 @@ class ScanResult:
     refined: list[tuple[str, float, str, str, float]] | None = None
     # lowest λ along the running (λ_min, or λ where the running stops if still decreasing)
     lam_low: np.ndarray | None = None
+    # 2D scans over M and one Yukawa parameter: curves traced point by point (running/curves.py):
+    # the stable boundary (λ_low = 0), the metastability line and the integer μ_I contours
+    curves: list[Curve] | None = None
 
     POINT_ARRAYS = ("mu_I", "status", "mu_stop", "edges", "lam_min", "mu_min", "min_edges",
                     "cross_edges", "min_cross_edges", "lam_low")
@@ -155,8 +171,8 @@ def _init_worker(spec: RunnerSpec) -> None:
     _WORKER_RUNNER = Runner.from_spec(spec)
 
 
-REFINABLE = ("unstable", "nonperturbative", "stable", "g2_nonpert")   # region boundaries located by bisection
-MINIMUM_SHOWN = ("unstable", "stable", "g2_nonpert")    # statuses where the minimum of λ is shown
+REFINABLE = ("unstable", "nonperturbative", "stable", *GAUGE_NONPERT)   # region boundaries located by bisection
+MINIMUM_SHOWN = ("unstable", "stable", *GAUGE_NONPERT)    # statuses where the minimum of λ is shown
 EdgeTask = tuple[tuple[int, ...], dict[str, float], str, float, float, bool, str, str,
                  dict | None, float, SMInputs | None, int, str]
 
@@ -309,10 +325,63 @@ def _refine_bends(runner: Runner, pool: ProcessPoolExecutor | None, nproc: int, 
 
 
 def _chunk_worker(kind: str, items: list) -> list:
-    """Run a chunk of grid points (kind 'point') or of (job, bisection task) pairs ('edge')."""
+    """Run a chunk of grid points (kind 'point'), of (job, bisection task) pairs ('edge') or
+    of curves to trace ('trace')."""
     if kind == "point":
         return [_run_point(t) for t in items]
+    if kind == "trace":
+        assert _WORKER_RUNNER is not None
+        return [trace(_WORKER_RUNNER, t) for t in items]
     return [(j, *_bisect_worker(t)) for j, t in items]
+
+
+TRACE_RUNS = 400        # rough number of runs per traced curve (progress bar estimate)
+
+
+def _trace_curves(runner: Runner, pool: ProcessPoolExecutor | None, progress: _Progress,
+                  names: list[str], grids: list[np.ndarray], status: np.ndarray, mu_I: np.ndarray,
+                  lam_low: np.ndarray, fixed: dict[str, float], links: dict | None, M_default: float,
+                  inputs: SMInputs | None, sm_mu_I: float | None = None,
+                  lam_min: np.ndarray | None = None, mu_stop: np.ndarray | None = None) -> list[Curve] | None:
+    """Trace the stable boundary, the metastability line, every integer μ_I contour and the
+    contour μ_I = μ_I^SM (sm_mu_I, if given) of a 2D scan over M and one Yukawa parameter (see
+    running/curves.py); None for other scans.
+
+    One task per connected piece of each curve on the grid; the pieces are traced in parallel.
+    Pieces that turn out to be the same curve are kept once, and μ_I contours ending on the
+    stable boundary get their end point there."""
+    sg = scaled_grid(names, grids)
+    if sg is None:
+        return None
+    yname, u, v, lo, hi = sg
+    order = (lambda A: A) if names[0] == "M" else (lambda A: np.asarray(A).T)    # arrays as [M, y]
+    st = order(status)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        LL = np.where(np.isin(st, VALID), order(lam_low), np.nan).astype(float)
+        meta = (meta_value(lam_low, lam_min, mu_stop, runner.numerics.mu_max)
+                if lam_min is not None and mu_stop is not None else lam_low)
+        LU = np.where(st == "unstable", order(meta), np.nan).astype(float)
+        MU = np.where(st == "unstable", np.log10(order(mu_I)), np.nan).astype(float)
+    wanted = [("lam_low", 0.0, LL), ("lam_low", META_LAMBDA, LU)]
+    wanted += [("mu_I", float(c), MU) for c in mu_levels(mu_I)]
+    if sm_mu_I is not None and sm_mu_I > 0:
+        wanted.append(("mu_I_sm", float(np.log10(sm_mu_I)), MU))
+    tasks = [TraceTask(kind, lvl, sd, yname, lo, hi, dict(fixed), links, M_default, inputs)
+             for kind, lvl, Z in wanted for sd in seeds(u, v, Z, lvl)]
+    if not tasks:
+        return []
+    progress.set_total(progress.total + TRACE_RUNS * len(tasks))
+    it = (_unordered(pool, "trace", tasks, 1) if pool is not None else (trace(runner, t) for t in tasks))
+    found: list[Curve] = []
+    for c in it:
+        progress.step(TRACE_RUNS)
+        if c is not None and len(c.y) > 1:
+            found.append(c)
+    kept: list[Curve] = []
+    for c in sorted(found, key=lambda c: -len(c.y)):        # the same curve from several seeds: once
+        if not any(same_curve(k, c, (hi[0] - lo[0], hi[1] - lo[1])) for k in kept):
+            kept.append(c)
+    return join_ends(kept)
 
 
 def _unordered(pool: ProcessPoolExecutor, kind: str, items: list, chunk: int) -> Iterator:
@@ -481,6 +550,14 @@ def run_scan(runner: Runner, scan: dict[str, np.ndarray], fixed: dict[str, float
             refined = _refine_bends(runner, pool, nproc, progress, names, grids, edge_axis,
                                     [(status, edges, "status"), (labels, min_edges, "minimum")],
                                     fixed, links, M_default, inputs, steps)
+
+        # 4. the stable boundary, the metastability line and the μ_I contours, traced point by
+        #    point (2D scans over M and one Yukawa parameter)
+        curves = None
+        sm = runner.run({}, NO_NEW_PHYSICS, inputs, sm_only=True)
+        if len(names) == 2 and runner.numerics.trace_curves:
+            curves = _trace_curves(runner, pool, progress, names, grids, status, mu_I, lam_low,
+                                   fixed, links, M_default, inputs, sm.mu_I, lam_min, mu_stop)
     finally:
         progress.close()
         if pool is not None:
@@ -489,10 +566,9 @@ def run_scan(runner: Runner, scan: dict[str, np.ndarray], fixed: dict[str, float
     if n_failed:
         log.warning("scan: %d of %d points failed to integrate (status 'failed' in scan.csv)",
                     n_failed, status.size)
-    sm = runner.run({}, NO_NEW_PHYSICS, inputs, sm_only=True)
     return ScanResult(dict(zip(names, grids)), fixed, mu_I, status, mu_stop, sm.mu_I, edges, edge_axis,
                       lam_min, mu_min, min_edges, sm.lam_min, sm.mu_min, cross, min_cross, refined,
-                      lam_low=lam_low)
+                      lam_low=lam_low, curves=curves)
 
 
 # --------------------------------------------------------------------------

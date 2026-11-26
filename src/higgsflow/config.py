@@ -16,15 +16,15 @@
           "fixed":      {},
           "examples":   [{"y": 0.5, "M": 1e3}],
           "benchmarks": [{"y": 0.5}],
-          "run":        {"betas": "native", "loops": 2, "M": 1e3, "plots": true,
-                         "threshold": "one-loop", "trace_range": [1e-3, 1e3]},
+          "run":        {"betas": "pyrate", "loops": 2, "M": 1e3, "plots": true,
+                         "threshold": "one-loop", "trace_range": [1e-3, 1e3], "y_label": "$y$"},
           "sm_inputs":  {"Mt": 172.57},
           "numerics":   {"rtol": 1e-9}             optional, see settings.Numerics
           "trs":        {"M": 1e3, "samples": 2000, "range": [0, 1.5]}
                                                    optional: trace plot, see TraceSpec
         }
       ],
-      "workers": 0                                 optional; processes, 0 = all cores
+      "workers": 8                                 optional; processes (default 3/4 of the cores), 0 = all
     }
 
 The scan is set in "defaults" only, so that every model of a file is scanned over the
@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -61,6 +62,15 @@ def axis(v: list | dict) -> np.ndarray:
             return np.logspace(args[0], args[1], int(args[2]))
         raise ValueError(f"unknown axis spec {kind!r} (use linspace, logspace or a list)")
     return np.asarray(v, dtype=float)
+
+
+WORKER_SHARE = 0.75      # processes when a file does not say: this share of the cores
+
+
+def default_workers() -> int:
+    """Default number of processes: WORKER_SHARE of the machine's cores (at least 1), so that
+    some are left free for other work."""
+    return max(1, int((os.cpu_count() or 1) * WORKER_SHARE))
 
 
 def _workers(v: int | None) -> int | None:
@@ -120,6 +130,7 @@ class RunSpec:
     threshold  matching at M: 'one-loop' (running/threshold.py) or 'tree'
     trs        settings of the trace plot (None: not made)
     trace_range  range of the Tr((YY†)²) axis (log scale) of the instability maps
+    y_label    label of that axis in the maps (LaTeX); None: Tr[(YY†)²]^(1/4)
     """
     model: Model
     scan: dict[str, np.ndarray]
@@ -127,7 +138,7 @@ class RunSpec:
     fixed: dict[str, float] = field(default_factory=dict)
     examples: list[dict[str, float]] | None = None
     benchmarks: list[dict[str, float]] = field(default_factory=list)
-    betas: str = "native"
+    betas: str = "pyrate"
     loops: int = 2
     M: float = 1e3
     workers: int | None = 1
@@ -137,6 +148,7 @@ class RunSpec:
     numerics: Numerics = field(default_factory=Numerics)
     trs: TraceSpec | None = None
     trace_range: tuple[float, float] = (1e-3, 1e3)
+    y_label: str | None = None
 
     def prepared(self) -> RunSpec:
         """Checked copy: scanned keys removed from ``fixed`` (scanned values win), links
@@ -162,7 +174,7 @@ class RunSpec:
                 "trs": None if self.trs is None else {"M": self.trs.M, "samples": self.trs.samples,
                                                       "range": list(self.trs.range)},
                 "scan": {k: list(map(float, v)) for k, v in self.scan.items()},
-                "trace_range": list(self.trace_range),
+                "trace_range": list(self.trace_range), "y_label": self.y_label,
                 "fixed": self.fixed, "links": self.links or {}, "examples": self.examples,
                 "benchmarks": self.benchmarks}
 
@@ -199,13 +211,14 @@ def spec_from_dict(d: dict) -> RunSpec:
         fixed={k: float(v) for k, v in d.get("fixed", {}).items()},
         examples=d.get("examples"),
         benchmarks=d.get("benchmarks", []),
-        betas=run.get("betas", "native"),
+        betas=run.get("betas", "pyrate"),
         loops=int(run.get("loops", 2)),
         M=float(run.get("M", 1e3)),
         workers=_workers(run.get("workers", 1)),
         plots=bool(run.get("plots", True)),
         threshold=run.get("threshold", "one-loop"),
         trace_range=_trace_range(run.get("trace_range", (1e-3, 1e3))),
+        y_label=run.get("y_label"),
         inputs=SMInputs(**d.get("sm_inputs", {})),
         numerics=Numerics.from_dict(d.get("numerics")),
         trs=TraceSpec.from_dict(d.get("trs")),
@@ -217,7 +230,7 @@ class Study:
     """A JSON file: a named list of model entries (defaults already merged in)."""
     name: str
     entries: list[dict]
-    workers: int | None = None
+    workers: int | None = field(default_factory=default_workers)
 
     def specs(self) -> list[RunSpec]:
         """The RunSpec of every entry (raises on the first invalid one)."""
@@ -255,7 +268,7 @@ def study_from_dict(d: dict, default_name: str = "study") -> Study:
     if with_scan:
         raise ValueError(f'"scan" is only allowed in "defaults", not in a model entry ({", ".join(with_scan)})')
     return Study(d.get("name", default_name), [merge(defaults, e) for e in d["models"]],
-                 _workers(d.get("workers", 0)))
+                 _workers(d["workers"]) if "workers" in d else default_workers())
 
 
 def load(path: str | Path) -> Study:

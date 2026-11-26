@@ -13,7 +13,7 @@ DEFAULTS = {
     "links": {"y": "all"},
     "fixed": {"M": 1e3},
     "benchmarks": [{"y": 0.5}],
-    "run": {"betas": "native", "plots": False},
+    "run": {"betas": "pyrate", "plots": False},
 }
 
 

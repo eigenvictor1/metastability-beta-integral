@@ -5,7 +5,7 @@
     "links": {"y": "all"},
     "fixed": {"M": 1e2},
     "benchmarks": [{"y": 0.5}],
-    "run": {"betas": "native", "plots": false, "trace_range": [1e-3, 1e3]},
+    "run": {"betas": "pyrate", "plots": false, "trace_range": [1e-3, 1e3]},
     "trs": {"M": 1e3, "samples": 2000, "range": [0, 1.5]}
   },
   "models": [
@@ -38,6 +38,5 @@
       "examples": [{"y": 0.3, "M": 1e3}, {"y": 0.6, "M": 1e6}, {"y": 0.9, "M": 1e9}],
       "run": {"plots": true}
     }
-  ],
-  "workers": 0
+  ]
 }

@@ -131,6 +131,22 @@ def write_boundaries_csv(path: Path, scan) -> None:
             w.writerow([other[n] for n in others] + [e, s1, s2])
 
 
+def write_curves_csv(path: Path, scan) -> None:
+    """The curves traced point by point (running/curves.py): one row per point, with the curve
+    number, its kind ('lam_low': λ_low = level, i.e. the stable boundary at 0 and the
+    metastability line; 'mu_I': log10(μ_I/GeV) = level) and why it ends at each side."""
+    curves = getattr(scan, "curves", None)
+    if not curves:
+        return
+    yname = next((n for n in scan.axes if n != "M"), "y")
+    with open(path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["curve", "kind", "level", yname, "M", "log10_mu_limit", "ends"])
+        for k, c in enumerate(curves):
+            for y, M, a in zip(c.y, c.M, c.aux):
+                w.writerow([k, c.kind, c.level, y, M, a, "/".join(c.ends)])
+
+
 def write_samples_csv(path: Path, res) -> None:
     """The trace-plot samples: coupling values, Tr(YY†), Tr((YY†)²), μ_I and status."""
     with open(path, "w", newline="") as fh:

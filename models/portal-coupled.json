@@ -1,0 +1,36 @@
+{
+  "name": "portal-coupled",
+  "defaults": {
+    "scan": {"y": {"logspace": [-1.3, 0.544, 60]}, "M": {"logspace": [2.3010299956639812, 7, 60]}},
+    "links": {"y": "all"},
+    "benchmarks": [{"y": 0.5, "M": 1e3}, {"y": 0.5, "M": 1e6}],
+    "run": {"betas": "pyrate", "plots": true, "trace_range": [1e-3, 1e3]},
+    "trs": {"M": 1e3, "samples": 1500, "range": [0, 1.5]}
+  },
+  "models": [
+    {"name": "singlet_doublet", "fields": ["(1,1,0)", "(1,2,1/2)", "(1,2,-1/2)"], "include_sm_mixing": true},
+    {"name": "triplet_doublet", "fields": ["(1,3,0)", "(1,2,1/2)", "(1,2,-1/2)"], "include_sm_mixing": true},
+    {"name": "triplet_quadruplet", "fields": ["(1,3,0)", "(1,4,1/2)", "(1,4,-1/2)"], "include_sm_mixing": true},
+    {"name": "quintuplet_quadruplet", "fields": ["(1,5,0)", "(1,4,1/2)", "(1,4,-1/2)"], "include_sm_mixing": true},
+    {"name": "quintuplet_sextuplet", "fields": ["(1,5,0)", "(1,6,1/2)", "(1,6,-1/2)"], "include_sm_mixing": true},
+    {"name": "octet_M1_V2", "fields": ["(8,1,0)", "(8,2,1/2)", "(8,2,-1/2)"], "include_sm_mixing": true},
+    {"name": "octet_M3_V2", "fields": ["(8,3,0)", "(8,2,1/2)", "(8,2,-1/2)"], "include_sm_mixing": true},
+    {"name": "E_Delta1", "fields": ["(1,1,-1)", "(1,1,1)", "(1,2,-1/2)", "(1,2,1/2)"], "include_sm_mixing": true},
+    {"name": "Delta3_E", "fields": ["(1,2,-3/2)", "(1,2,3/2)", "(1,1,-1)", "(1,1,1)"], "include_sm_mixing": true},
+    {"name": "Sigma1_Delta1", "fields": ["(1,3,-1)", "(1,3,1)", "(1,2,-1/2)", "(1,2,1/2)"], "include_sm_mixing": true},
+    {"name": "Delta3_Sigma1", "fields": ["(1,2,-3/2)", "(1,2,3/2)", "(1,3,-1)", "(1,3,1)"], "include_sm_mixing": true},
+    {"name": "VLL_doublet_triplet", "fields": ["(1,2,1/2)", "(1,2,-1/2)", "(1,3,1)", "(1,3,-1)"], "include_sm_mixing": true},
+    {"name": "VLL_triplet_quadruplet_Y1_2", "fields": ["(1,3,1)", "(1,3,-1)", "(1,4,1/2)", "(1,4,-1/2)"], "include_sm_mixing": true},
+    {"name": "VLL_triplet_quadruplet_Y3_2", "fields": ["(1,3,1)", "(1,3,-1)", "(1,4,3/2)", "(1,4,-3/2)"], "include_sm_mixing": true},
+    {"name": "U_Q1", "fields": ["(3,1,2/3)", "(3b,1,-2/3)", "(3,2,1/6)", "(3b,2,-1/6)"], "include_sm_mixing": true},
+    {"name": "D_Q1", "fields": ["(3,1,-1/3)", "(3b,1,1/3)", "(3,2,1/6)", "(3b,2,-1/6)"], "include_sm_mixing": true},
+    {"name": "U_Q7", "fields": ["(3,1,2/3)", "(3b,1,-2/3)", "(3,2,7/6)", "(3b,2,-7/6)"], "include_sm_mixing": true},
+    {"name": "D_Q5", "fields": ["(3,1,-1/3)", "(3b,1,1/3)", "(3,2,-5/6)", "(3b,2,5/6)"], "include_sm_mixing": true},
+    {"name": "T1_Q1", "fields": ["(3,3,-1/3)", "(3b,3,1/3)", "(3,2,1/6)", "(3b,2,-1/6)"], "include_sm_mixing": true},
+    {"name": "T1_Q5", "fields": ["(3,3,-1/3)", "(3b,3,1/3)", "(3,2,-5/6)", "(3b,2,5/6)"], "include_sm_mixing": true},
+    {"name": "Q1_T2", "fields": ["(3,2,1/6)", "(3b,2,-1/6)", "(3,3,2/3)", "(3b,3,-2/3)"], "include_sm_mixing": true},
+    {"name": "Q7_T2", "fields": ["(3,2,7/6)", "(3b,2,-7/6)", "(3,3,2/3)", "(3b,3,-2/3)"], "include_sm_mixing": true},
+    {"name": "sextet_Y0", "fields": ["(6,1,0)", "(6b,1,0)", "(6,2,1/2)", "(6b,2,-1/2)"], "include_sm_mixing": true},
+    {"name": "octet_V1_V2", "fields": ["(8,1,1)", "(8,1,-1)", "(8,2,1/2)", "(8,2,-1/2)"], "include_sm_mixing": true}
+  ]
+}

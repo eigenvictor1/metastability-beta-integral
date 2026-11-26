@@ -69,6 +69,16 @@ def test_g2_landau_pole_is_labelled():
     assert r.coupling("lam")[np.isfinite(r.coupling("lam"))][-1] > 0
 
 
+def test_g1_landau_pole_is_labelled():
+    """A coloured doublet with a large hypercharge (Q7) near the TeV scale: g_1 runs into its
+    pole below M_Pl and, before λ turns negative, the g₁⁶ two-loop term outgrows the one-loop
+    gauge terms -> 'g1_nonpert', not an instability driven by the breakdown."""
+    m = Model.from_dict({"fields": ["(3,2,7/6)", "(3b,2,-7/6)"], "include_sm_mixing": False})
+    r = Runner(compute_betas(m), compute_betas(Model())).run({}, 2e2)
+    assert r.status == "g1_nonpert" and r.mu_I is None
+    assert r.coupling("lam")[np.isfinite(r.coupling("lam"))][-1] > 0
+
+
 def test_running_continues_past_lambda_zero_and_finds_the_minimum():
     """The SM runs on after λ = 0 up to M_Pl; λ has its minimum (≈ -0.01 near 10^17 GeV)
     inside the range. A run that stops while λ still decreases has no minimum."""
@@ -162,3 +172,15 @@ def test_singlet_betas_and_threshold():
     below, above = lamv[at[0]], lamv[at[-1]]
     assert above - below == pytest.approx(0.05, abs=2e-3)
     assert r.status == "stable"
+
+
+def test_shallow_dip_inside_one_step_is_unstable():
+    """λ dipping just below zero inside a single solver step changes no sign at the step ends;
+    the crossing must still be found (from the minimum of λ) -> 'unstable', with μ_I < μ_min."""
+    from higgsflow.running.threshold import ThresholdMatching
+    m = Model.from_dict({"fields": ["(3,2,-5/6)", "(3b,2,5/6)"], "include_sm_mixing": True,
+                         "exclude": ["yF1dc1", "yF1dc2"]})
+    b = compute_betas(m)
+    r = Runner(b, compute_betas(Model()), threshold=ThresholdMatching(m)).run({"yF1dc3": 0.21139}, 33963.6)
+    assert r.lam_min is not None and r.lam_min < 0
+    assert r.status == "unstable" and r.mu_I < r.mu_min

@@ -31,7 +31,7 @@ Every input is a JSON file with the same structure, whether it holds one model o
 ```powershell
 higgsflow run models\vll_doublet_singlet.json     # one model
 higgsflow run models\seesaw_typeI.json            # three models
-higgsflow run models\mixed.json --workers 0         # 0 = all cores
+higgsflow run models\mixed.json --workers 0         # 0 = all cores (default: 3/4 of them)
 higgsflow run models\seesaw_typeI.json --no-trs   # without the trace plots
 higgsflow replot models\mixed.json                 # redraw the plots from stored data (no running)
 higgsflow replot models\mixed.json --only Q5 T2    # only some models
@@ -56,14 +56,14 @@ From Python: `examples/scripted_scan.py` analyses one model, and
     "links": {"y": "all"},
     "fixed": {"M": 1e3},
     "benchmarks": [{"y": 0.5}],
-    "run": {"betas": "native", "plots": false}
+    "run": {"betas": "pyrate", "plots": false}
   },
   "models": [
     {"name": "VLL", "fields": ["(1,2,-1/2)", "(1,2,1/2)", "(1,1,0)"]},
     {"name": "triplet_VLL", "fields": ["S:(1,3,0)", "(1,2,-1/2)", "(1,2,1/2)"],
      "fixed": {"M": 2e3}, "run": {"plots": true}}
   ],
-  "workers": 0
+  "workers": 8
 }
 ```
 
@@ -73,7 +73,7 @@ From Python: `examples/scripted_scan.py` analyses one model, and
 | `defaults` | top | **required**: the `scan`, plus defaults for any per-model key below |
 | `scan` | defaults | 1 or 2 parameters: `M` (GeV) and/or Yukawas (or link aliases) at μ = M; the same grid for every model |
 | `models` | top | **required** list, one entry per model |
-| `workers` | top | number of processes; 0 = all cores (default). A study first computes the missing beta functions in parallel (as many at once as memory allows, ~3 GB each), then runs the models one after the other, each scan on all processes |
+| `workers` | top | number of processes (default 3/4 of the machine's cores; at most the number of cores); 0 = all cores. A study first computes the missing beta functions in parallel (as many at once as memory allows, ~3 GB each), then runs the models one after the other, each scan on all processes |
 | `name` | model | name of the theory in plot and folder names (default: a label from the representations) |
 | `fields` | model | **required** list of new left-handed Weyl fields |
 | `include_sm_mixing`, `exclude` | model | also generate new–SM Yukawas / switch off some Yukawas |
@@ -81,9 +81,9 @@ From Python: `examples/scripted_scan.py` analyses one model, and
 | `fixed` | model | values of parameters that aren't scanned |
 | `examples` | model | points drawn in `running-<theory>.pdf` |
 | `benchmarks` | model | points whose μ_I goes into the summary |
-| `run` | model | `betas` (`native`/`pyrate`/`both`), `loops`, `M` (default threshold), `plots`, `threshold` (`one-loop`/`tree`), `trace_range` (range of Tr[(YY†)²] shown in `inscale-` plots, default `[1e-3, 1e3]`; the axis is drawn as Tr[(YY†)²]^(1/4)) |
+| `run` | model | `betas` (`pyrate`, the default, needs `higgsflow install-pyrate`; `native`; `both`; models with the scalar singlet need `native`), `loops`, `M` (default threshold), `plots`, `threshold` (`one-loop`/`tree`), `trace_range` (range of Tr[(YY†)²] shown in `inscale-` plots, default `[1e-3, 1e3]`; the axis is drawn as Tr[(YY†)²]^(1/4)), `y_label` (label of that axis, LaTeX, e.g. `"$y$"`; default Tr[(YY†)²]^(1/4); `replot` with the model file uses the file's value) |
 | `sm_inputs` | model | `Mt`, `Mh`, `alpha_s`, `MW` |
-| `numerics` | model | optional: `rtol`, `atol`, `n_points`, `mu_max`, `max_rhs_calls`, `boundary_steps` (see `settings.py`) |
+| `numerics` | model | optional: `rtol`, `atol`, `n_points`, `mu_max`, `max_rhs_calls`, `boundary_steps`, `trace_curves` (default `true`: trace the stable boundary, the metastability line and the μ_I contours of 2D scans point by point; see below and `settings.py`) |
 | `trs` | model | optional trace plot: `{"M": 1e3, "samples": 2000, "range": [0, 1.5]}` — fixed M, number of Yukawa points (spread evenly over the trace plane), range of their size √(Σy²); switch it off with `"enabled": false` (or `"trs": false`), or for the whole run with `higgsflow run ... --no-trs` (`--trs` turns it on where it has settings) |
 
 `scan` is allowed only in `defaults`, so all models of a file share one grid; a model
@@ -123,13 +123,32 @@ through `links` (e.g. `"y"` as an alias). Any other key of a model entry overrid
 Each run (one JSON file) gets its own folder, named after the file's `"name"`
 (default: the file name):
 
+### Traced curves
+
+In 2D scans over M and one Yukawa parameter, the lines of the maps are not interpolated
+between grid points but traced with runs placed on them (`running/curves.py`):
+
+* the stable boundary, λ_low = 0 (λ_low: the lowest λ along the running, < 0 exactly when λ
+  crosses zero), the metastability line λ_low = −0.06, and every integer contour of log10 μ_I;
+* each connected piece of a curve is seeded from the grid, moved onto the curve by a root
+  search and followed in both directions by predictor–corrector continuation: a step along
+  the tangent, then Brent's method along the normal (tolerance 2·10⁻⁵ of the plot), with the
+  step adapted to the curvature (0.0002–0.03 of the plot);
+* a μ_I contour meets the stable boundary tangentially (μ_I has a square-root edge there); it
+  ends at the point of the traced boundary where log10 μ_min equals its level.
+
+The pieces are traced in parallel; it costs roughly 150–250 runs per curve. The colour map is
+still interpolated from the grid. `"numerics": {"trace_curves": false}` switches it off (grid
+contours as before); the points are in `data/curves.csv`.
+
 ```
 results/<run>/
   summary.csv, summary.json    one row per theory in the run
   running-<theory>.pdf         λ(μ) for the example points and the SM, plus the Yukawas
   inscale-<theory>.pdf         μ_I against 1 or 2 parameters (M, if scanned, is always on the x axis);
                                the Yukawa parameter is shown as Tr[(YY†)²]^(1/4) (log scale), and region
-                               boundaries (non-perturbative, stable) are located by bisection
+                               boundaries (non-perturbative, stable) are located by bisection; the
+                               stable boundary and the μ_I contours are traced (see "Traced curves")
   inscale-min-<theory>.pdf     the same map with log10 of μ_min (scale of the minimum of λ) as
                                cornflower-blue dashed contours and shading (0.1, then 0.05 more opaque per
                                contour towards lower μ_min), and a thicker dashed line where a
@@ -144,7 +163,8 @@ results/<run>/
   <theory>/
     model.json                 fields, couplings, conventions, inputs and settings
     betas/                     betas_*.tex/.json and comparison.md (native vs PyR@TE)
-    data/                      running_*.csv, scan.csv, boundaries.csv, trs_samples.csv, and
+    data/                      running_*.csv, scan.csv, boundaries.csv, curves.csv (traced curves),
+                               trs_samples.csv, and
                                plotdata.pkl: everything the plots show, so that `higgsflow replot`
                                can redraw them (e.g. after a style change) without running again
 ```

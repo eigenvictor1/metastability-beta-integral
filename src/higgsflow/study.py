@@ -131,7 +131,7 @@ def run_study(study: Study, results_root: str | Path | None = None, workers: int
     """Run every model; return the path of the summary CSV."""
     root = Path(results_root or default_results_root())
     workers = study.workers if workers is None else workers
-    ncpu = workers or os.cpu_count() or 1
+    ncpu = min(workers or os.cpu_count() or 1, os.cpu_count() or 1)     # never more than the cores
     entries = _unique_labels(study.entries)
     n = len(entries)
     rows: list[dict] = []
@@ -160,6 +160,17 @@ def run_study(study: Study, results_root: str | Path | None = None, workers: int
                                             "created": datetime.now().isoformat(timespec="seconds"),
                                             "models": study.entries, "summary": rows})
     failed = [r for r in rows if r.get("error")]
+    if any(e.get("run", {}).get("plots", True) for e in entries):
+        # the maps once more, all on one colour range, and their shared colour bar
+        from .pipeline import replot
+        settings = {}
+        for e in entries:
+            try:
+                s = spec_from_dict(e)
+                settings[s.model.label()] = {"y_label": s.y_label, "title": s.model.latex_title()}
+            except Exception:  # noqa: BLE001 - an invalid entry was reported already
+                continue
+        replot(out, settings=settings)
     log.info("done: %d ok, %d failed -> %s", n - len(failed), len(failed), short(path))
     return path
 

@@ -274,6 +274,31 @@ class Model:
             lab = lab[:100] + "_" + hashlib.sha1(lab.encode()).hexdigest()[:8]
         return lab
 
+    def latex_title(self) -> str:
+        """Plot title in LaTeX: each new particle's symbol and representation, e.g.
+        '$\\Sigma: (1, 3, 0)$' or '$2\\times Q_5: (3, 2, -5/6)$'. A vector-like partner (the
+        conjugate representation) is not repeated; unnamed fields (F1, F2, ...) take the symbol
+        of the model name (e.g. 'Delta1' -> Δ₁) when the model has one particle; fixed-mass
+        fields and the scalar singlet are appended."""
+        scanned = [f for f in self.new_fields if f.mass is None]
+        groups: list[WeylFermion] = []
+        for f in scanned:
+            conj = any(g.su3 == f.su3[::-1] and g.su2 == f.su2 and g.Y == -f.Y and g.copies == f.copies
+                       for g in groups)
+            if not conj:
+                groups.append(f)
+        token = (self.name or "").split("_")[0]
+        model_symbol = token if re.fullmatch(r"[A-Za-z]{1,6}\d*", token) and len(groups) == 1 else None
+        parts = []
+        for f in groups:
+            sym = f.name if not re.fullmatch(r"F\d+", f.name) else model_symbol
+            parts.append((rf"{f.copies}\times " if f.copies > 1 else "")
+                         + (latex_symbol(sym) + ": " if sym else "") + latex_rep(f))
+        parts += [latex_symbol(f.name) + ": " + latex_rep(f) for f in self.new_fields if f.mass is not None]
+        if self.singlet is not None:
+            parts.append("S")
+        return "$" + " + ".join(parts) + "$" if parts else "SM"
+
     def fields_text(self) -> str:
         """New fields with their representations, for plot titles, e.g. 'L4(1,2,-1/2) + 3×N(1,1,0)'."""
         out = " + ".join((f"{f.copies}×" if f.copies > 1 else "") + f"{f.name}{f.rep()}"
@@ -347,3 +372,28 @@ def yukawa_tensor(f1: WeylFermion, f2: WeylFermion, conj_higgs: bool):
     d21, d22, _ = C2.shape
     C = np.einsum("ab,ijk->aibjk", C3, C2).reshape(d31 * d21, d32 * d22, 2)
     return C
+
+
+GREEK = {"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa", "lambda",
+         "mu", "nu", "xi", "pi", "rho", "sigma", "tau", "upsilon", "phi", "chi", "psi", "omega"}
+
+
+def latex_symbol(name: str) -> str:
+    """LaTeX symbol of a particle name: 'Sigma' -> \\Sigma, 'Delta1' -> \\Delta_{1}, 'Q5' -> Q_{5},
+    'N' -> N; other names upright (\\mathrm)."""
+    m = re.fullmatch(r"([A-Za-z]+)(\d*)", name)
+    if not m:
+        return rf"\mathrm{{{name}}}"
+    letters, digits = m.groups()
+    if letters.lower() in GREEK:
+        base = "\\" + (letters.capitalize() if letters[0].isupper() else letters.lower())
+    else:
+        base = letters if len(letters) == 1 else rf"\mathrm{{{letters}}}"
+    return base + (f"_{{{digits}}}" if digits else "")
+
+
+def latex_rep(f: WeylFermion) -> str:
+    """Representation in LaTeX, e.g. (\\bar{3}, 2, -5/6)."""
+    su3 = gt.su3_label(f.su3)
+    su3 = rf"\bar{{{su3[:-1]}}}" if su3.endswith("b") else su3
+    return f"({su3}, {f.su2}, {f.Y})"

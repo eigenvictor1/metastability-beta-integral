@@ -88,7 +88,10 @@ def with_trace_axis(scan: ScanResult, traces: YukawaTraces, links: dict | None,
     if scan.refined is not None:               # adaptive boundary points along p, mapped too
         refined = [((TR4, o, s1, s2, t4(e)) if ax == p else (ax, o, s1, s2, e))
                    for ax, o, s1, s2, e in scan.refined]
-    return scan.map_points(lambda arr: arr[sl], axes=axes, **moved, refined=refined,
+    curves = None
+    if scan.curves is not None:                # traced curves: their Yukawa values mapped too
+        curves = [replace(c, y=np.array([t4(float(v)) for v in c.y])) for c in scan.curves]
+    return scan.map_points(lambda arr: arr[sl], axes=axes, **moved, refined=refined, curves=curves,
                            edge_axis=TR4 if scan.edge_axis == p else scan.edge_axis)
 
 
@@ -107,5 +110,9 @@ def with_root_axis(scan: ScanResult) -> ScanResult:
     if scan.refined is not None:
         refined = [((TR4R, o, s1, s2, abs(e) ** 0.25) if ax == TR4 else (ax, o, s1, s2, e))
                    for ax, o, s1, s2, e in scan.refined]
+    curves = None
+    if scan.curves is not None:
+        curves = [replace(c, y=np.abs(c.y) ** 0.25) for c in scan.curves]
     return replace(scan, axes=axes, edges=root(scan.edges), min_edges=root(scan.min_edges),
-                   refined=refined, edge_axis=TR4R if scan.edge_axis == TR4 else scan.edge_axis)
+                   refined=refined, curves=curves,
+                   edge_axis=TR4R if scan.edge_axis == TR4 else scan.edge_axis)

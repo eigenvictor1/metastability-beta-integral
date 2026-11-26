@@ -4,7 +4,7 @@
     "scan": {"y": {"logspace": [-1.3, 0.544, 60]}, "M": {"logspace": [2.3010299956639812, 7, 60]}},
     "links": {"y": "all"},
     "benchmarks": [{"y": 0.5, "M": 1e3}, {"y": 0.5, "M": 1e6}],
-    "run": {"betas": "native", "plots": true, "trace_range": [1e-3, 1e3]},
+    "run": {"betas": "pyrate", "plots": true, "trace_range": [1e-3, 1e3], "y_label": "$y$"},
     "trs": {"M": 1e3, "samples": 1500, "range": [0, 1.5]}
   },
   "models": [
@@ -60,6 +60,5 @@
     {"name": "T2_2", "fields": ["2x(3,3,2/3)", "2x(3b,3,-2/3)"], "include_sm_mixing": true, "exclude": ["yF21Q1", "yF21Q2", "yF22Q1", "yF22Q2"]},
     {"name": "T2_3", "fields": ["3x(3,3,2/3)", "3x(3b,3,-2/3)"], "include_sm_mixing": true, "exclude": ["yF21Q1", "yF21Q2", "yF22Q1", "yF22Q2", "yF23Q1", "yF23Q2"]},
     {"name": "T2_4", "fields": ["4x(3,3,2/3)", "4x(3b,3,-2/3)"], "include_sm_mixing": true, "exclude": ["yF21Q1", "yF21Q2", "yF22Q1", "yF22Q2", "yF23Q1", "yF23Q2", "yF24Q1", "yF24Q2"]}
-  ],
-  "workers": 0
+  ]
 }

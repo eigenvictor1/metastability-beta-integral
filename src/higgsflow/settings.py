@@ -19,6 +19,8 @@ class Numerics:
     mu_max: float = M_PLANCK           # upper end of the running (GeV)
     max_rhs_calls: int = 200_000       # a run needing more beta evaluations is 'failed'
     boundary_steps: int = 8            # bisection steps locating region boundaries in scans (0 = off)
+    trace_curves: bool = True          # 2D scans: trace the stable boundary, the metastability line
+                                       # and the μ_I contours point by point (running/curves.py)
 
     @classmethod
     def from_dict(cls, d: dict | None) -> Numerics:
